@@ -251,7 +251,7 @@ section "6. acme.sh — установка"
 # =============================================================================
 if [[ ! -f "${ACME_HOME}/acme.sh" ]]; then
     info "Устанавливаю acme.sh..."
-    curl -fsSL https://get.acme.sh | sh -s -- --email "${EMAIL}" --no-profile
+    curl -fsSL https://get.acme.sh | sh -s email="${EMAIL}"
     info "acme.sh установлен"
 else
     info "acme.sh уже установлен"
