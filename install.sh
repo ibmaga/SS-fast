@@ -251,7 +251,7 @@ section "6. acme.sh — установка"
 # =============================================================================
 if [[ ! -f "${ACME_HOME}/acme.sh" ]]; then
     info "Устанавливаю acme.sh..."
-    curl -fsSL https://get.acme.sh | bash -s -- --email "${EMAIL}"
+    curl -fsSL https://get.acme.sh | sh -s -- --email "${EMAIL}" --no-profile
     info "acme.sh установлен"
 else
     info "acme.sh уже установлен"
@@ -271,12 +271,12 @@ info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encr
 # acme.sh читает их именно оттуда, не из окружения
 ACME_CONF="${ACME_HOME}/account.conf"
 # Удаляем старые если есть
-sed -i '/REGRU_API_USERNAME/d' "${ACME_CONF}" 2>/dev/null || true
-sed -i '/REGRU_API_PASSWORD/d' "${ACME_CONF}" 2>/dev/null || true
-echo "REGRU_API_USERNAME='${REGRU_USER}'" >> "${ACME_CONF}"
-echo "REGRU_API_PASSWORD='${REGRU_PASS}'" >> "${ACME_CONF}"
+sed -i '/REGRU_API_Username/d' "${ACME_CONF}" 2>/dev/null || true
+sed -i '/REGRU_API_Password/d' "${ACME_CONF}" 2>/dev/null || true
+echo "REGRU_API_Username='${REGRU_USER}'" >> "${ACME_CONF}"
+echo "REGRU_API_Password='${REGRU_PASS}'" >> "${ACME_CONF}"
 
-REGRU_API_USERNAME="${REGRU_USER}" REGRU_API_PASSWORD="${REGRU_PASS}" \
+REGRU_API_Username="${REGRU_USER}" REGRU_API_Password="${REGRU_PASS}" \
 "${ACME}" --issue \
     --dns dns_regru \
     -d "${DOMAIN}" \
