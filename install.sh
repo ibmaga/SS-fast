@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  SS-fast — self-steal nginx для уже установленного remnanode
-#  Usage: bash install.sh <domain> <email>
+#  Usage: bash install.sh <domain> <email> <regru_login> <regru_password>
 # =============================================================================
 set -euo pipefail
 
@@ -14,10 +14,14 @@ section() { echo -e "\n${CYAN}━━━━━━━━━  $*  ━━━━━�
 
 # ── args ──────────────────────────────────────────────────────────────────────
 DOMAIN="${1:-}"
+REGRU_USER="${3:-}"
+REGRU_PASS="${4:-}"
 EMAIL="${2:-}"
 
-[[ -z "$DOMAIN" ]] && error "Укажи домен: bash install.sh <domain> <email>"
-[[ -z "$EMAIL"  ]] && error "Укажи email:  bash install.sh <domain> <email>"
+[[ -z "$DOMAIN"     ]] && error "Usage: bash install.sh <domain> <email> <regru_login> <regru_password>"
+[[ -z "$EMAIL"      ]] && error "Usage: bash install.sh <domain> <email> <regru_login> <regru_password>"
+[[ -z "$REGRU_USER" ]] && error "Usage: bash install.sh <domain> <email> <regru_login> <regru_password>"
+[[ -z "$REGRU_PASS" ]] && error "Usage: bash install.sh <domain> <email> <regru_login> <regru_password>"
 [[ $EUID -ne 0  ]] && error "Запусти от root"
 
 # ── константы ─────────────────────────────────────────────────────────────────
@@ -257,40 +261,39 @@ ACME="${ACME_HOME}/acme.sh"
 export PATH="${ACME_HOME}:${PATH}"
 
 # =============================================================================
-section "7. Выпуск сертификата (standalone)"
+section "7. Выпуск сертификата (dns-01, reg.ru)"
 # =============================================================================
-# Проверить что порт 80 свободен
-if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-    error "Порт 80 занят. Освободи его и повтори."
-fi
-
-# UFW: временно открыть 80
-ufw allow 80/tcp comment 'ACME tmp' > /dev/null 2>&1 || true
-ufw --force enable > /dev/null 2>&1 || true
-
-info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encrypt)..."
+info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encrypt, dns-01)..."
 
 "${ACME}" --set-default-ca --server letsencrypt
 
+export REGRU_API_USERNAME="${REGRU_USER}"
+export REGRU_API_PASSWORD="${REGRU_PASS}"
+
 "${ACME}" --issue \
-    --standalone \
+    --dns dns_regru \
     -d "${DOMAIN}" \
     --keylength ec-256 \
     --key-file       "${NGINX_DIR}/privkey.key" \
     --fullchain-file "${NGINX_DIR}/fullchain.pem" \
     --force \
-    || { ufw delete allow 80/tcp > /dev/null 2>&1 || true; error "Не удалось выпустить сертификат. Проверь DNS и порт 80."; }
+    || error "Не удалось выпустить сертификат. Проверь логин/пароль reg.ru и DNS."
 
-ufw delete allow 80/tcp > /dev/null 2>&1 || true
-ufw reload > /dev/null 2>&1 || true
 info "Сертификат → ${NGINX_DIR}/fullchain.pem, privkey.key"
 
-# Настраиваем автоперевыпуск
+# Настраиваем автоперевыпуск (сохраняем credentials для cron)
 "${ACME}" --install-cert -d "${DOMAIN}" \
     --ecc \
     --key-file       "${NGINX_DIR}/privkey.key" \
     --fullchain-file "${NGINX_DIR}/fullchain.pem" \
     --reloadcmd      "docker compose -f ${NGINX_DIR}/docker-compose.yml restart 2>/dev/null || true"
+
+# Сохраняем reg.ru credentials для автоперевыпуска
+ACME_CONF="${ACME_HOME}/account.conf"
+grep -q 'REGRU_API_USERNAME' "${ACME_CONF}" 2>/dev/null || {
+    echo "REGRU_API_USERNAME='${REGRU_USER}'" >> "${ACME_CONF}"
+    echo "REGRU_API_PASSWORD='${REGRU_PASS}'" >> "${ACME_CONF}"
+}
 
 # =============================================================================
 section "9. nginx.conf"
