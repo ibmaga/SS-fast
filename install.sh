@@ -125,14 +125,23 @@ section "3. Проверка DNS"
 SERVER_IP=$(curl -s --max-time 5 https://api.ipify.org \
          || curl -s --max-time 5 https://ifconfig.me \
          || true)
-DNS_IP=$(getent hosts "${DOMAIN}" | awk '{print $1}' | head -1 || true)
+mapfile -t DNS_IPS < <(getent hosts "${DOMAIN}" | awk '{print $1}' || true)
 
-[[ -z "$DNS_IP" ]] && error "Домен ${DOMAIN} не резолвится. Добавь A-запись и повтори."
+if [[ ${#DNS_IPS[@]} -eq 0 ]]; then
+    error "Домен ${DOMAIN} не резолвится. Добавь A-запись и повтори."
+fi
 
-if [[ "$DNS_IP" != "$SERVER_IP" ]]; then
-    warn "DNS IP (${DNS_IP}) != Server IP (${SERVER_IP}) — acme.sh попробует сам"
+info "DNS записи для ${DOMAIN}: ${DNS_IPS[*]}"
+
+FOUND=0
+for ip in "${DNS_IPS[@]}"; do
+    [[ "$ip" == "$SERVER_IP" ]] && FOUND=1 && break
+done
+
+if [[ $FOUND -eq 0 ]]; then
+    error "IP сервера (${SERVER_IP}) не найден среди A-записей домена (${DNS_IPS[*]}). Добавь запись и повтори."
 else
-    info "DNS OK: ${DOMAIN} → ${DNS_IP}"
+    info "DNS OK: ${DOMAIN} содержит ${SERVER_IP}"
 fi
 
 # =============================================================================
@@ -238,62 +247,50 @@ section "6. acme.sh — установка"
 # =============================================================================
 if [[ ! -f "${ACME_HOME}/acme.sh" ]]; then
     info "Устанавливаю acme.sh..."
-    curl -fsSL https://get.acme.sh | bash -s -- --email "${EMAIL}" --no-profile
+    curl -fsSL https://get.acme.sh | bash -s -- --email "${EMAIL}"
     info "acme.sh установлен"
 else
     info "acme.sh уже установлен"
 fi
-export PATH="${ACME_HOME}:${PATH}"
 ACME="${ACME_HOME}/acme.sh"
+[[ ! -f "${ACME}" ]] && error "acme.sh не найден: ${ACME}"
+export PATH="${ACME_HOME}:${PATH}"
 
 # =============================================================================
-section "7. ACME challenge — временный http-сервер"
+section "7. Выпуск сертификата (standalone)"
 # =============================================================================
-mkdir -p "${WEBROOT}/.well-known/acme-challenge"
-
 # Проверить что порт 80 свободен
 if ss -tlnp 2>/dev/null | grep -q ':80 '; then
     error "Порт 80 занят. Освободи его и повтори."
 fi
 
-info "Запускаю python3 http.server на :80..."
-cd "${WEBROOT}"
-python3 -m http.server 80 &>/dev/null &
-HTTP_PID=$!
-cd - > /dev/null
-
 # UFW: временно открыть 80
 ufw allow 80/tcp comment 'ACME tmp' > /dev/null 2>&1 || true
 ufw --force enable > /dev/null 2>&1 || true
-sleep 1
 
-# =============================================================================
-section "8. Выпуск сертификата"
-# =============================================================================
 info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encrypt)..."
 
-"${ACME}" --issue \
-    -d "${DOMAIN}" \
-    --webroot "${WEBROOT}" \
-    --server letsencrypt \
-    --keylength ec-256 \
-    --force \
-    || { kill "${HTTP_PID}" 2>/dev/null; error "Не удалось выпустить сертификат. Проверь DNS и порт 80."; }
+"${ACME}" --set-default-ca --server letsencrypt
 
-# Останавливаем временный http-сервер
-kill "${HTTP_PID}" 2>/dev/null || true
+"${ACME}" --issue \
+    --standalone \
+    -d "${DOMAIN}" \
+    --keylength ec-256 \
+    --key-file       "${NGINX_DIR}/privkey.key" \
+    --fullchain-file "${NGINX_DIR}/fullchain.pem" \
+    --force \
+    || { ufw delete allow 80/tcp > /dev/null 2>&1 || true; error "Не удалось выпустить сертификат. Проверь DNS и порт 80."; }
+
 ufw delete allow 80/tcp > /dev/null 2>&1 || true
 ufw reload > /dev/null 2>&1 || true
+info "Сертификат → ${NGINX_DIR}/fullchain.pem, privkey.key"
 
-# Устанавливаем сертификат прямо в /opt/nginx/
+# Настраиваем автоперевыпуск
 "${ACME}" --install-cert -d "${DOMAIN}" \
     --ecc \
-    --cert-file      "${NGINX_DIR}/cert.pem" \
     --key-file       "${NGINX_DIR}/privkey.key" \
     --fullchain-file "${NGINX_DIR}/fullchain.pem" \
     --reloadcmd      "docker compose -f ${NGINX_DIR}/docker-compose.yml restart 2>/dev/null || true"
-
-info "Сертификат → ${NGINX_DIR}/fullchain.pem, privkey.key"
 
 # =============================================================================
 section "9. nginx.conf"
