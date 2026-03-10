@@ -364,7 +364,7 @@ section "10. docker-compose.yml"
 # =============================================================================
 cat > "${NGINX_DIR}/docker-compose.yml" << DCEOF
 services:
-  remnawave-nginx:
+  remnawave-nginx-ss:
     image: nginx:1.28
     container_name: remnawave-nginx-ss
     hostname: remnawave-nginx-ss
