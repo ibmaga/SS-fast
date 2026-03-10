@@ -364,10 +364,10 @@ section "10. docker-compose.yml"
 # =============================================================================
 cat > "${NGINX_DIR}/docker-compose.yml" << DCEOF
 services:
-  remnawave-nginx-ss:
+  remnanode-nginx:
     image: nginx:1.28
-    container_name: remnawave-nginx-ss
-    hostname: remnawave-nginx-ss
+    container_name: remnanode-nginx
+    hostname: remnanode-nginx
     restart: always
     ulimits:
       nofile:
@@ -402,13 +402,13 @@ info "UFW: открыты 22, 443"
 section "12. Запуск"
 # =============================================================================
 # Останавливаем старый контейнер если остался от предыдущего запуска скрипта
-docker stop remnawave-nginx-ss 2>/dev/null || true
-docker rm   remnawave-nginx-ss 2>/dev/null || true
+docker stop remnanode-nginx 2>/dev/null || true
+docker rm   remnanode-nginx 2>/dev/null || true
 
 cd "${NGINX_DIR}"
-docker compose pull -q remnawave-nginx-ss
-docker compose up -d --no-deps remnawave-nginx-ss
-info "remnawave-nginx-ss запущен"
+docker compose pull -q remnanode-nginx
+docker compose up -d --no-deps remnanode-nginx
+info "remnanode-nginx запущен"
 
 sleep 2
 if [[ -S "${NGINX_SOCK}" ]]; then
