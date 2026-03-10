@@ -263,37 +263,55 @@ export PATH="${ACME_HOME}:${PATH}"
 # =============================================================================
 section "7. Выпуск сертификата (dns-01, reg.ru)"
 # =============================================================================
-info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encrypt, dns-01)..."
 
-"${ACME}" --set-default-ca --server letsencrypt
+# Проверяем нужен ли перевыпуск
+SKIP_CERT=0
+if [[ -f "${NGINX_DIR}/fullchain.pem" ]]; then
+    EXPIRY=$(openssl x509 -enddate -noout -in "${NGINX_DIR}/fullchain.pem" 2>/dev/null | cut -d= -f2 || true)
+    if [[ -n "$EXPIRY" ]]; then
+        EXPIRY_EPOCH=$(date -d "${EXPIRY}" +%s 2>/dev/null || echo 0)
+        NOW_EPOCH=$(date +%s)
+        DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+        if [[ $DAYS_LEFT -gt 30 ]]; then
+            info "Сертификат действителен ещё ${DAYS_LEFT} дней — пропускаю выпуск"
+            SKIP_CERT=1
+        else
+            warn "Сертификат истекает через ${DAYS_LEFT} дней — перевыпускаю"
+        fi
+    fi
+fi
 
-# Сохраняем credentials в account.conf ДО запуска --issue
-# acme.sh читает их именно оттуда, не из окружения
-ACME_CONF="${ACME_HOME}/account.conf"
-# Удаляем старые если есть
-sed -i '/REGRU_API_Username/d' "${ACME_CONF}" 2>/dev/null || true
-sed -i '/REGRU_API_Password/d' "${ACME_CONF}" 2>/dev/null || true
-echo "REGRU_API_Username='${REGRU_USER}'" >> "${ACME_CONF}"
-echo "REGRU_API_Password='${REGRU_PASS}'" >> "${ACME_CONF}"
+if [[ $SKIP_CERT -eq 0 ]]; then
+    info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encrypt, dns-01)..."
 
-REGRU_API_Username="${REGRU_USER}" REGRU_API_Password="${REGRU_PASS}" \
-"${ACME}" --issue \
-    --dns dns_regru \
-    -d "${DOMAIN}" \
-    --keylength ec-256 \
-    --key-file       "${NGINX_DIR}/privkey.key" \
-    --fullchain-file "${NGINX_DIR}/fullchain.pem" \
-    --force \
-    || error "Не удалось выпустить сертификат. Проверь логин/пароль reg.ru и DNS."
+    "${ACME}" --set-default-ca --server letsencrypt
 
-info "Сертификат → ${NGINX_DIR}/fullchain.pem, privkey.key"
+    # Сохраняем credentials в account.conf ДО запуска --issue
+    ACME_CONF="${ACME_HOME}/account.conf"
+    sed -i '/REGRU_API_Username/d' "${ACME_CONF}" 2>/dev/null || true
+    sed -i '/REGRU_API_Password/d' "${ACME_CONF}" 2>/dev/null || true
+    echo "REGRU_API_Username='${REGRU_USER}'" >> "${ACME_CONF}"
+    echo "REGRU_API_Password='${REGRU_PASS}'" >> "${ACME_CONF}"
 
-# Настраиваем автоперевыпуск
-"${ACME}" --install-cert -d "${DOMAIN}" \
-    --ecc \
-    --key-file       "${NGINX_DIR}/privkey.key" \
-    --fullchain-file "${NGINX_DIR}/fullchain.pem" \
-    --reloadcmd      "docker compose -f ${NGINX_DIR}/docker-compose.yml restart 2>/dev/null || true"
+    REGRU_API_Username="${REGRU_USER}" REGRU_API_Password="${REGRU_PASS}" \
+    "${ACME}" --issue \
+        --dns dns_regru \
+        -d "${DOMAIN}" \
+        --keylength ec-256 \
+        --key-file       "${NGINX_DIR}/privkey.key" \
+        --fullchain-file "${NGINX_DIR}/fullchain.pem" \
+        --force \
+        || error "Не удалось выпустить сертификат. Проверь логин/пароль reg.ru и DNS."
+
+    info "Сертификат → ${NGINX_DIR}/fullchain.pem, privkey.key"
+
+    # Настраиваем автоперевыпуск
+    "${ACME}" --install-cert -d "${DOMAIN}" \
+        --ecc \
+        --key-file       "${NGINX_DIR}/privkey.key" \
+        --fullchain-file "${NGINX_DIR}/fullchain.pem" \
+        --reloadcmd      "docker compose -f ${NGINX_DIR}/docker-compose.yml restart 2>/dev/null || true"
+fi
 
 # =============================================================================
 section "9. nginx.conf"
@@ -348,8 +366,8 @@ cat > "${NGINX_DIR}/docker-compose.yml" << DCEOF
 services:
   remnawave-nginx:
     image: nginx:1.28
-    container_name: remnawave-nginx
-    hostname: remnawave-nginx
+    container_name: remnawave-nginx-ss
+    hostname: remnawave-nginx-ss
     restart: always
     ulimits:
       nofile:
