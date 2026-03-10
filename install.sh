@@ -402,9 +402,9 @@ info "UFW: открыты 22, 443"
 section "12. Запуск"
 # =============================================================================
 cd "${NGINX_DIR}"
-docker compose pull -q
-docker compose up -d
-info "remnawave-nginx запущен"
+docker compose pull -q remnawave-nginx-ss
+docker compose up -d remnawave-nginx-ss
+info "remnawave-nginx-ss запущен"
 
 sleep 2
 if [[ -S "${NGINX_SOCK}" ]]; then
