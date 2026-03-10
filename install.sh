@@ -401,9 +401,13 @@ info "UFW: открыты 22, 443"
 # =============================================================================
 section "12. Запуск"
 # =============================================================================
+# Останавливаем старый контейнер если остался от предыдущего запуска скрипта
+docker stop remnawave-nginx-ss 2>/dev/null || true
+docker rm   remnawave-nginx-ss 2>/dev/null || true
+
 cd "${NGINX_DIR}"
 docker compose pull -q remnawave-nginx-ss
-docker compose up -d remnawave-nginx-ss
+docker compose up -d --no-deps remnawave-nginx-ss
 info "remnawave-nginx-ss запущен"
 
 sleep 2
