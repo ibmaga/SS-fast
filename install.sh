@@ -111,8 +111,15 @@ fi
 # =============================================================================
 section "2. Зависимости"
 # =============================================================================
-apt-get update -qq
-apt-get install -y -qq curl socat wget python3
+PKGS=()
+for pkg in curl socat wget python3 cron openssl; do
+    dpkg -s "$pkg" &>/dev/null || PKGS+=("$pkg")
+done
+if [[ ${#PKGS[@]} -gt 0 ]]; then
+    info "Устанавливаю: ${PKGS[*]}"
+    apt-get update -qq
+    apt-get install -y -qq "${PKGS[@]}"
+fi
 
 # BBR
 if ! grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null; then
@@ -143,7 +150,7 @@ for ip in "${DNS_IPS[@]}"; do
 done
 
 if [[ $FOUND -eq 0 ]]; then
-    error "IP сервера (${SERVER_IP}) не найден среди A-записей домена (${DNS_IPS[*]}). Добавь запись и повтори."
+    warn "IP сервера (${SERVER_IP}) не найден среди A-записей домена (${DNS_IPS[*]}). Убедись что A-запись добавлена (dns-01 не требует совпадения IP)."
 else
     info "DNS OK: ${DOMAIN} содержит ${SERVER_IP}"
 fi
