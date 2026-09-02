@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  SS-fast — self-steal nginx для уже установленного remnanode
-#  Usage: bash install.sh <domain> <email> <regru_login> <regru_password>
+#
+#  DNS-01 провайдер: reg.ru ИЛИ cloudflare (выбор по аргументам)
+#
+#  Usage:
+#    Cloudflare:  bash install.sh <domain> <email> cf     <CF_API_TOKEN>
+#    Reg.ru:      bash install.sh <domain> <email> regru  <login> <password>
+#    (legacy)     bash install.sh <domain> <email> <login> <password>   # = regru
 # =============================================================================
 set -euo pipefail
-
 RED='\033[0;31m'; GREEN='\033[1;32m'; YELLOW='\033[1;33m'
 WHITE='\033[1;37m'; GRAY='\033[0;90m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()    { echo -e "${GREEN}[INFO]${NC}  $*"; }
@@ -12,17 +17,57 @@ warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 section() { echo -e "\n${CYAN}━━━━━━━━━  $*  ━━━━━━━━━${NC}"; }
 
+usage() {
+cat <<USG
+Usage:
+  Cloudflare:  bash install.sh <domain> <email> cf     <CF_API_TOKEN> [CF_ACCOUNT_ID]
+  Reg.ru:      bash install.sh <domain> <email> regru  <login> <password>
+  (legacy)     bash install.sh <domain> <email> <login> <password>        # = regru
+USG
+exit 1
+}
+
 # ── args ──────────────────────────────────────────────────────────────────────
 DOMAIN="${1:-}"
-REGRU_USER="${3:-}"
-REGRU_PASS="${4:-}"
 EMAIL="${2:-}"
+ARG3="${3:-}"
+ARG4="${4:-}"
+ARG5="${5:-}"
 
-[[ -z "$DOMAIN"     ]] && error "Usage: bash install.sh <domain> <email> <regru_login> <regru_password>"
-[[ -z "$EMAIL"      ]] && error "Usage: bash install.sh <domain> <email> <regru_login> <regru_password>"
-[[ -z "$REGRU_USER" ]] && error "Usage: bash install.sh <domain> <email> <regru_login> <regru_password>"
-[[ -z "$REGRU_PASS" ]] && error "Usage: bash install.sh <domain> <email> <regru_login> <regru_password>"
-[[ $EUID -ne 0  ]] && error "Запусти от root"
+[[ -z "$DOMAIN" || -z "$EMAIL" ]] && usage
+[[ $EUID -ne 0 ]] && error "Запусти от root"
+
+# Определяем DNS-провайдера
+DNS_PROVIDER=""
+CF_TOKEN=""; CF_ACCOUNT=""
+REGRU_USER=""; REGRU_PASS=""
+
+case "${ARG3,,}" in
+    cf|cloudflare)
+        DNS_PROVIDER="cf"
+        CF_TOKEN="${ARG4:-}"
+        CF_ACCOUNT="${ARG5:-0772ec88076005da23b2391a9ecdbf7d}"
+        [[ -z "$CF_TOKEN" ]] && error "Не задан Cloudflare API token"
+        ;;
+    regru)
+        DNS_PROVIDER="regru"
+        REGRU_USER="${ARG4:-}"
+        REGRU_PASS="${ARG5:-}"
+        [[ -z "$REGRU_USER" || -z "$REGRU_PASS" ]] && error "Не заданы логин/пароль reg.ru"
+        ;;
+    "")
+        usage
+        ;;
+    *)
+        # legacy: install.sh domain email <login> <password>
+        DNS_PROVIDER="regru"
+        REGRU_USER="${ARG3}"
+        REGRU_PASS="${ARG4:-}"
+        [[ -z "$REGRU_USER" || -z "$REGRU_PASS" ]] && error "Не заданы логин/пароль reg.ru"
+        ;;
+esac
+
+info "DNS-провайдер: ${DNS_PROVIDER}"
 
 # ── константы ─────────────────────────────────────────────────────────────────
 REMNANODE_DIR="/opt/remnanode"
@@ -38,45 +83,31 @@ section "1. Проверка окружения"
     error "Не найден ${REMNANODE_DIR}/docker-compose.yml — убедись что remnanode установлен"
 info "remnanode найден в ${REMNANODE_DIR}"
 
-# Проверяем что /dev/shm пробросен в remnanode контейнер
 COMPOSE_FILE="${REMNANODE_DIR}/docker-compose.yml"
 if grep -q '/dev/shm' "${COMPOSE_FILE}"; then
     info "/dev/shm уже пробросен в remnanode — OK"
 else
     warn "/dev/shm не найден в ${COMPOSE_FILE}"
     info "Добавляю /dev/shm volume в remnanode..."
-
-    # Добавляем строку после первого вхождения "volumes:" внутри сервиса remnanode
-    # Используем python3 для надёжного парсинга YAML-отступов
     python3 << PYEOF
 import re, sys
-
 with open("${COMPOSE_FILE}", "r") as f:
     content = f.read()
-
-# Ищем секцию volumes: внутри сервисов и добавляем /dev/shm если её нет
-# Стратегия: найти строку с "volumes:" и добавить строку после неё
 if '/dev/shm' in content:
     print("already present")
     sys.exit(0)
-
-# Найти первую секцию volumes: (под сервисами)
 lines = content.splitlines(keepends=True)
 result = []
 inserted = False
 i = 0
 while i < len(lines):
     result.append(lines[i])
-    # Ищем строку вида "    volumes:" (с отступом — значит внутри сервиса)
     if not inserted and re.match(r'^(\s+)volumes:\s*$', lines[i]):
         indent = re.match(r'^(\s+)', lines[i]).group(1)
-        # Добавляем строку с тем же отступом + 2 пробела
         result.append(indent + "  - /dev/shm:/dev/shm:rw\n")
         inserted = True
     i += 1
-
 if not inserted:
-    # volumes: секции нет вообще — добавляем в конец блока remnanode
     result2 = []
     i = 0
     while i < len(lines):
@@ -94,15 +125,11 @@ if not inserted:
             continue
         i += 1
     result = result2
-
 with open("${COMPOSE_FILE}", "w") as f:
     f.writelines(result)
 print("patched")
 PYEOF
-
     info "/dev/shm добавлен в ${COMPOSE_FILE}"
-
-    # Перезапускаем remnanode чтобы применить изменения
     info "Перезапускаю remnanode для применения volume..."
     docker compose -f "${COMPOSE_FILE}" up -d --force-recreate remnanode
     info "remnanode перезапущен"
@@ -120,8 +147,6 @@ if [[ ${#PKGS[@]} -gt 0 ]]; then
     apt-get update -qq
     apt-get install -y -qq "${PKGS[@]}"
 fi
-
-# BBR
 if ! grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null; then
     echo "net.core.default_qdisc = fq"           >> /etc/sysctl.conf
     echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
@@ -137,20 +162,16 @@ SERVER_IP=$(curl -s --max-time 5 https://api.ipify.org \
          || curl -s --max-time 5 https://ifconfig.me \
          || true)
 mapfile -t DNS_IPS < <(getent hosts "${DOMAIN}" | awk '{print $1}' || true)
-
 if [[ ${#DNS_IPS[@]} -eq 0 ]]; then
     error "Домен ${DOMAIN} не резолвится. Добавь A-запись и повтори."
 fi
-
 info "DNS записи для ${DOMAIN}: ${DNS_IPS[*]}"
-
 FOUND=0
 for ip in "${DNS_IPS[@]}"; do
     [[ "$ip" == "$SERVER_IP" ]] && FOUND=1 && break
 done
-
 if [[ $FOUND -eq 0 ]]; then
-    warn "IP сервера (${SERVER_IP}) не найден среди A-записей домена (${DNS_IPS[*]}). Убедись что A-запись добавлена (dns-01 не требует совпадения IP)."
+    warn "IP сервера (${SERVER_IP}) не найден среди A-записей домена (${DNS_IPS[*]}). dns-01 не требует совпадения IP."
 else
     info "DNS OK: ${DOMAIN} содержит ${SERVER_IP}"
 fi
@@ -160,7 +181,6 @@ section "4. Создание структуры /opt/nginx"
 # =============================================================================
 mkdir -p "${WEBROOT}"
 info "Структура: ${NGINX_DIR}/"
-info "           ${WEBROOT}/"
 
 # =============================================================================
 section "5. index.html (2048)"
@@ -171,7 +191,7 @@ cat > "${WEBROOT}/index.html" << 'HTMLEOF'
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>2048 — layerzro.ru</title>
+    <title>2048</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -251,6 +271,8 @@ cat > "${WEBROOT}/index.html" << 'HTMLEOF'
 </body>
 </html>
 HTMLEOF
+# подставляем домен в <title>
+sed -i "s|<title>2048</title>|<title>2048 — ${DOMAIN}</title>|" "${WEBROOT}/index.html"
 info "index.html → ${WEBROOT}/index.html"
 
 # =============================================================================
@@ -268,10 +290,8 @@ ACME="${ACME_HOME}/acme.sh"
 export PATH="${ACME_HOME}:${PATH}"
 
 # =============================================================================
-section "7. Выпуск сертификата (dns-01, reg.ru)"
+section "7. Выпуск сертификата (dns-01, ${DNS_PROVIDER})"
 # =============================================================================
-
-# Проверяем нужен ли перевыпуск
 SKIP_CERT=0
 if [[ -f "${NGINX_DIR}/fullchain.pem" ]]; then
     EXPIRY=$(openssl x509 -enddate -noout -in "${NGINX_DIR}/fullchain.pem" 2>/dev/null | cut -d= -f2 || true)
@@ -289,30 +309,42 @@ if [[ -f "${NGINX_DIR}/fullchain.pem" ]]; then
 fi
 
 if [[ $SKIP_CERT -eq 0 ]]; then
-    info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encrypt, dns-01)..."
-
+    info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encrypt, dns-01 / ${DNS_PROVIDER})..."
     "${ACME}" --set-default-ca --server letsencrypt
 
-    # Сохраняем credentials в account.conf ДО запуска --issue
     ACME_CONF="${ACME_HOME}/account.conf"
-    sed -i '/REGRU_API_Username/d' "${ACME_CONF}" 2>/dev/null || true
-    sed -i '/REGRU_API_Password/d' "${ACME_CONF}" 2>/dev/null || true
-    echo "REGRU_API_Username='${REGRU_USER}'" >> "${ACME_CONF}"
-    echo "REGRU_API_Password='${REGRU_PASS}'" >> "${ACME_CONF}"
 
-    REGRU_API_Username="${REGRU_USER}" REGRU_API_Password="${REGRU_PASS}" \
-    "${ACME}" --issue \
-        --dns dns_regru \
-        -d "${DOMAIN}" \
-        --keylength ec-256 \
-        --key-file       "${NGINX_DIR}/privkey.key" \
-        --fullchain-file "${NGINX_DIR}/fullchain.pem" \
-        --force \
-        || error "Не удалось выпустить сертификат. Проверь логин/пароль reg.ru и DNS."
+    if [[ "$DNS_PROVIDER" == "cf" ]]; then
+        # чистим старые креды обоих провайдеров
+        sed -i '/REGRU_API_Username/d;/REGRU_API_Password/d;/CF_Token/d;/CF_Account_ID/d' "${ACME_CONF}" 2>/dev/null || true
+        echo "CF_Token='${CF_TOKEN}'"        >> "${ACME_CONF}"
+        echo "CF_Account_ID='${CF_ACCOUNT}'" >> "${ACME_CONF}"
+        CF_Token="${CF_TOKEN}" CF_Account_ID="${CF_ACCOUNT}" \
+        "${ACME}" --issue \
+            --dns dns_cf \
+            -d "${DOMAIN}" \
+            --keylength ec-256 \
+            --key-file       "${NGINX_DIR}/privkey.key" \
+            --fullchain-file "${NGINX_DIR}/fullchain.pem" \
+            --force \
+            || error "Не удалось выпустить сертификат. Проверь CF API token и что зона в Cloudflare."
+    else
+        sed -i '/REGRU_API_Username/d;/REGRU_API_Password/d;/CF_Token/d;/CF_Account_ID/d' "${ACME_CONF}" 2>/dev/null || true
+        echo "REGRU_API_Username='${REGRU_USER}'" >> "${ACME_CONF}"
+        echo "REGRU_API_Password='${REGRU_PASS}'" >> "${ACME_CONF}"
+        REGRU_API_Username="${REGRU_USER}" REGRU_API_Password="${REGRU_PASS}" \
+        "${ACME}" --issue \
+            --dns dns_regru \
+            -d "${DOMAIN}" \
+            --keylength ec-256 \
+            --key-file       "${NGINX_DIR}/privkey.key" \
+            --fullchain-file "${NGINX_DIR}/fullchain.pem" \
+            --force \
+            || error "Не удалось выпустить сертификат. Проверь логин/пароль reg.ru и DNS."
+    fi
 
     info "Сертификат → ${NGINX_DIR}/fullchain.pem, privkey.key"
 
-    # Настраиваем автоперевыпуск
     "${ACME}" --install-cert -d "${DOMAIN}" \
         --ecc \
         --key-file       "${NGINX_DIR}/privkey.key" \
@@ -325,12 +357,10 @@ section "9. nginx.conf"
 # =============================================================================
 cat > "${NGINX_DIR}/nginx.conf" << NGEOF
 server_names_hash_bucket_size 64;
-
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
     ""      close;
 }
-
 ssl_protocols TLSv1.2 TLSv1.3;
 ssl_ecdh_curve X25519:prime256v1:secp384r1;
 ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;
@@ -338,25 +368,20 @@ ssl_prefer_server_ciphers on;
 ssl_session_timeout 1d;
 ssl_session_cache shared:MozSSL:10m;
 ssl_session_tickets off;
-
 server {
     server_name ${DOMAIN};
     listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
     http2 on;
-
     ssl_certificate     /etc/nginx/ssl/fullchain.pem;
     ssl_certificate_key /etc/nginx/ssl/privkey.key;
     ssl_trusted_certificate /etc/nginx/ssl/fullchain.pem;
-
     root /var/www/html;
     index index.html;
     add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
-
     location / {
         try_files \$uri \$uri/ =404;
     }
 }
-
 server {
     listen unix:/dev/shm/nginx.sock ssl proxy_protocol default_server;
     server_name _;
@@ -408,15 +433,12 @@ info "UFW: открыты 22, 443"
 # =============================================================================
 section "12. Запуск"
 # =============================================================================
-# Останавливаем старый контейнер если остался от предыдущего запуска скрипта
 docker stop remnanode-nginx 2>/dev/null || true
 docker rm   remnanode-nginx 2>/dev/null || true
-
 cd "${NGINX_DIR}"
 docker compose pull -q remnanode-nginx
 docker compose up -d --no-deps remnanode-nginx
 info "remnanode-nginx запущен"
-
 sleep 2
 if [[ -S "${NGINX_SOCK}" ]]; then
     info "Unix socket готов: ${NGINX_SOCK}"
@@ -430,6 +452,7 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║          Self-steal установлен успешно!              ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
+echo -e "  DNS-провайдер: ${CYAN}${DNS_PROVIDER}${NC}"
 echo -e "  Структура ${CYAN}/opt/nginx/${NC}"
 echo -e "  ${GRAY}├── html/index.html${NC}"
 echo -e "  ${GRAY}├── docker-compose.yml${NC}"
