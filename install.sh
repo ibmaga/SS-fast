@@ -1,473 +1,437 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  SS-fast — self-steal nginx для уже установленного remnanode
+#  ssfast — self-steal nginx для remnanode, мульти-домен
 #
-#  DNS-01 провайдер: reg.ru ИЛИ cloudflare (выбор по аргументам)
+#  ssfast.sh init
+#  ssfast.sh add <domain> [доп.домены...] [--name LABEL] [--dns regru|cf] [--html DIR]
+#  ssfast.sh remove <name>
+#  ssfast.sh list
+#  ssfast.sh sync
+#  ssfast.sh renew [name]
 #
-#  Usage:
-#    Cloudflare:  bash install.sh <domain> <email> cf     <CF_API_TOKEN>
-#    Reg.ru:      bash install.sh <domain> <email> regru  <login> <password>
-#    (legacy)     bash install.sh <domain> <email> <login> <password>   # = regru
+#  Каждый набор сертификатов живёт под своим именем:
+#      /opt/nginx/certs/<name>/{fullchain.pem,privkey.key}
+#      /opt/nginx/conf.d/<name>.conf
+#      /opt/nginx/html/<name>/index.html
+#  Реестр: /opt/nginx/domains.conf   (name|dns|domain1,domain2,...)
+#  Креды:  /opt/nginx/.env           (chmod 600)
 # =============================================================================
 set -euo pipefail
+
 RED='\033[0;31m'; GREEN='\033[1;32m'; YELLOW='\033[1;33m'
-WHITE='\033[1;37m'; GRAY='\033[0;90m'; CYAN='\033[0;36m'; NC='\033[0m'
+CYAN='\033[0;36m'; GRAY='\033[0;90m'; NC='\033[0m'
 info()    { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-error()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 section() { echo -e "\n${CYAN}━━━━━━━━━  $*  ━━━━━━━━━${NC}"; }
 
-usage() {
-cat <<USG
-Usage:
-  Cloudflare:  bash install.sh <domain> <email> cf     <CF_API_TOKEN> [CF_ACCOUNT_ID]
-  Reg.ru:      bash install.sh <domain> <email> regru  <login> <password>
-  (legacy)     bash install.sh <domain> <email> <login> <password>        # = regru
-USG
-exit 1
+NGINX_DIR="/opt/nginx"
+CONF_D="${NGINX_DIR}/conf.d"
+CERTS="${NGINX_DIR}/certs"
+HTML="${NGINX_DIR}/html"
+DOMAINS_FILE="${NGINX_DIR}/domains.conf"
+ENV_FILE="${NGINX_DIR}/.env"
+COMPOSE="${NGINX_DIR}/docker-compose.yml"
+REMNANODE_DIR="/opt/remnanode"
+ACME_HOME="/root/.acme.sh"
+ACME="${ACME_HOME}/acme.sh"
+SOCK="/dev/shm/nginx.sock"
+CONTAINER="remnanode-nginx"
+RAW_URL="${RAW_URL:-https://raw.githubusercontent.com/ibmaga/SS-fast/main/ssfast.sh}"
+RENEW_DAYS="${RENEW_DAYS:-30}"
+
+[[ $EUID -ne 0 ]] && error "Запусти от root"
+[[ -f "$ENV_FILE" ]] && { set -a; . "$ENV_FILE"; set +a; }
+
+# =============================================================================
+#  helpers
+# =============================================================================
+nginx_running() { docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; }
+
+reload_nginx() {
+    nginx_running || { warn "Контейнер ${CONTAINER} не запущен — пропускаю reload"; return 0; }
+    docker exec "$CONTAINER" nginx -t || error "nginx -t не прошёл, конфиг не применён"
+    docker exec "$CONTAINER" nginx -s reload
+    info "nginx перезагружен"
 }
 
-# ── args ──────────────────────────────────────────────────────────────────────
-DOMAIN="${1:-}"
-EMAIL="${2:-}"
-ARG3="${3:-}"
-ARG4="${4:-}"
-ARG5="${5:-}"
+cert_days_left() {
+    local f="$1" exp
+    [[ -f "$f" ]] || return 1
+    exp=$(openssl x509 -enddate -noout -in "$f" 2>/dev/null | cut -d= -f2) || return 1
+    [[ -n "$exp" ]] || return 1
+    echo $(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+}
 
-[[ -z "$DOMAIN" || -z "$EMAIL" ]] && usage
-[[ $EUID -ne 0 ]] && error "Запусти от root"
+registry_get()  { grep -E "^$1\|" "$DOMAINS_FILE" 2>/dev/null || true; }
+registry_put()  {
+    touch "$DOMAINS_FILE"
+    grep -vE "^$1\|" "$DOMAINS_FILE" > "${DOMAINS_FILE}.tmp" 2>/dev/null || true
+    echo "$1|$2|$3" >> "${DOMAINS_FILE}.tmp"
+    sort -o "$DOMAINS_FILE" "${DOMAINS_FILE}.tmp"; rm -f "${DOMAINS_FILE}.tmp"
+}
+registry_del()  {
+    [[ -f "$DOMAINS_FILE" ]] || return 0
+    grep -vE "^$1\|" "$DOMAINS_FILE" > "${DOMAINS_FILE}.tmp" || true
+    mv "${DOMAINS_FILE}.tmp" "$DOMAINS_FILE"
+}
 
-# Определяем DNS-провайдера
-DNS_PROVIDER=""
-CF_TOKEN=""; CF_ACCOUNT=""
-REGRU_USER=""; REGRU_PASS=""
+dns_env_check() {
+    case "$1" in
+        regru)
+            [[ -n "${REGRU_API_Username:-}" && -n "${REGRU_API_Password:-}" ]] \
+                || error "Для dns=regru нужны REGRU_API_Username / REGRU_API_Password (env или ${ENV_FILE})"
+            ;;
+        cf)
+            [[ -n "${CF_Token:-}" ]] \
+                || error "Для dns=cf нужен CF_Token (env или ${ENV_FILE}); при нескольких аккаунтах — ещё CF_Account_ID"
+            ;;
+        *) error "Неизвестный dns-провайдер: $1 (поддерживаются: regru, cf)" ;;
+    esac
+}
+dns_plugin() { case "$1" in regru) echo dns_regru ;; cf) echo dns_cf ;; esac; }
 
-case "${ARG3,,}" in
-    cf|cloudflare)
-        DNS_PROVIDER="cf"
-        CF_TOKEN="${ARG4:-}"
-        CF_ACCOUNT="${ARG5:-0772ec88076005da23b2391a9ecdbf7d}"
-        [[ -z "$CF_TOKEN" ]] && error "Не задан Cloudflare API token"
-        ;;
-    regru)
-        DNS_PROVIDER="regru"
-        REGRU_USER="${ARG4:-}"
-        REGRU_PASS="${ARG5:-}"
-        [[ -z "$REGRU_USER" || -z "$REGRU_PASS" ]] && error "Не заданы логин/пароль reg.ru"
-        ;;
-    "")
-        usage
-        ;;
-    *)
-        # legacy: install.sh domain email <login> <password>
-        DNS_PROVIDER="regru"
-        REGRU_USER="${ARG3}"
-        REGRU_PASS="${ARG4:-}"
-        [[ -z "$REGRU_USER" || -z "$REGRU_PASS" ]] && error "Не заданы логин/пароль reg.ru"
-        ;;
-esac
+# провайдер определяется по NS-записям зоны — руками указывать не нужно
+detect_dns() {
+    local d="$1" ns
+    ns=$(dig +short NS "$d" 2>/dev/null | tr 'A-Z' 'a-z')
+    [[ -z "$ns" ]] && ns=$(dig +short NS "${d#*.}" 2>/dev/null | tr 'A-Z' 'a-z')
+    case "$ns" in
+        *cloudflare*)     echo cf ;;
+        *reg.ru*|*regru*) echo regru ;;
+        *)                echo "${DEFAULT_DNS:-regru}" ;;
+    esac
+}
 
-info "DNS-провайдер: ${DNS_PROVIDER}"
-
-# ── константы ─────────────────────────────────────────────────────────────────
-REMNANODE_DIR="/opt/remnanode"
-NGINX_DIR="/opt/nginx"
-WEBROOT="${NGINX_DIR}/html"
-ACME_HOME="/root/.acme.sh"
-NGINX_SOCK="/dev/shm/nginx.sock"
-
-# =============================================================================
-section "1. Проверка окружения"
-# =============================================================================
-[[ ! -f "${REMNANODE_DIR}/docker-compose.yml" ]] && \
-    error "Не найден ${REMNANODE_DIR}/docker-compose.yml — убедись что remnanode установлен"
-info "remnanode найден в ${REMNANODE_DIR}"
-
-COMPOSE_FILE="${REMNANODE_DIR}/docker-compose.yml"
-if grep -q '/dev/shm' "${COMPOSE_FILE}"; then
-    info "/dev/shm уже пробросен в remnanode — OK"
-else
-    warn "/dev/shm не найден в ${COMPOSE_FILE}"
-    info "Добавляю /dev/shm volume в remnanode..."
-    python3 << PYEOF
-import re, sys
-with open("${COMPOSE_FILE}", "r") as f:
-    content = f.read()
-if '/dev/shm' in content:
-    print("already present")
-    sys.exit(0)
-lines = content.splitlines(keepends=True)
-result = []
-inserted = False
-i = 0
-while i < len(lines):
-    result.append(lines[i])
-    if not inserted and re.match(r'^(\s+)volumes:\s*$', lines[i]):
-        indent = re.match(r'^(\s+)', lines[i]).group(1)
-        result.append(indent + "  - /dev/shm:/dev/shm:rw\n")
-        inserted = True
-    i += 1
-if not inserted:
-    result2 = []
-    i = 0
-    while i < len(lines):
-        result2.append(lines[i])
-        if not inserted and re.match(r'^\s+remnanode\s*:', lines[i]):
-            service_indent = re.match(r'^(\s+)', lines[i]).group(1)
-            j = i + 1
-            while j < len(lines) and (lines[j].strip() == '' or re.match(r'^' + service_indent + r'\s+', lines[j])):
-                result2.append(lines[j])
-                j += 1
-            result2.append(service_indent + "  volumes:\n")
-            result2.append(service_indent + "    - /dev/shm:/dev/shm:rw\n")
-            inserted = True
-            i = j
-            continue
-        i += 1
-    result = result2
-with open("${COMPOSE_FILE}", "w") as f:
-    f.writelines(result)
-print("patched")
-PYEOF
-    info "/dev/shm добавлен в ${COMPOSE_FILE}"
-    info "Перезапускаю remnanode для применения volume..."
-    docker compose -f "${COMPOSE_FILE}" up -d --force-recreate remnanode
-    info "remnanode перезапущен"
-fi
-
-# =============================================================================
-section "2. Зависимости"
-# =============================================================================
-PKGS=()
-for pkg in curl socat wget python3 cron openssl; do
-    dpkg -s "$pkg" &>/dev/null || PKGS+=("$pkg")
-done
-if [[ ${#PKGS[@]} -gt 0 ]]; then
-    info "Устанавливаю: ${PKGS[*]}"
-    apt-get update -qq
-    apt-get install -y -qq "${PKGS[@]}"
-fi
-if ! grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null; then
-    echo "net.core.default_qdisc = fq"           >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
-    sysctl -p > /dev/null
-    info "BBR включён"
-fi
-info "Зависимости готовы"
-
-# =============================================================================
-section "3. Проверка DNS"
-# =============================================================================
-SERVER_IP=$(curl -s --max-time 5 https://api.ipify.org \
-         || curl -s --max-time 5 https://ifconfig.me \
-         || true)
-mapfile -t DNS_IPS < <(getent hosts "${DOMAIN}" | awk '{print $1}' || true)
-if [[ ${#DNS_IPS[@]} -eq 0 ]]; then
-    error "Домен ${DOMAIN} не резолвится. Добавь A-запись и повтори."
-fi
-info "DNS записи для ${DOMAIN}: ${DNS_IPS[*]}"
-FOUND=0
-for ip in "${DNS_IPS[@]}"; do
-    [[ "$ip" == "$SERVER_IP" ]] && FOUND=1 && break
-done
-if [[ $FOUND -eq 0 ]]; then
-    warn "IP сервера (${SERVER_IP}) не найден среди A-записей домена (${DNS_IPS[*]}). dns-01 не требует совпадения IP."
-else
-    info "DNS OK: ${DOMAIN} содержит ${SERVER_IP}"
-fi
-
-# =============================================================================
-section "4. Создание структуры /opt/nginx"
-# =============================================================================
-mkdir -p "${WEBROOT}"
-info "Структура: ${NGINX_DIR}/"
-
-# =============================================================================
-section "5. index.html (2048)"
-# =============================================================================
-cat > "${WEBROOT}/index.html" << 'HTMLEOF'
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>2048</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            min-height: 100vh; display: flex; flex-direction: column;
-            align-items: center; justify-content: center;
-            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-            background: linear-gradient(145deg, #0f0f14 0%, #1a1a24 100%);
-            color: #e4e4e7; padding: 1rem;
-        }
-        .header { display: flex; align-items: center; justify-content: space-between; width: 100%; max-width: 340px; margin-bottom: 1rem; }
-        h1 { font-size: 2rem; font-weight: 700; color: #fafafa; }
-        .score-box { background: rgba(255,255,255,0.08); padding: 0.4rem 0.8rem; border-radius: 8px; font-size: 0.85rem; color: #a1a1aa; }
-        .score-box span { font-weight: 600; color: #fff; }
-        .grid-wrap { background: #2d2d36; border-radius: 12px; padding: 12px; position: relative; }
-        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; width: 280px; height: 280px; position: relative; }
-        .cell { background: #3d3d48; border-radius: 6px; }
-        .tile { position: absolute; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 28px; border-radius: 6px; transition: transform 0.12s ease, top 0.12s ease, left 0.12s ease, width 0.12s ease, height 0.12s ease; }
-        .tile-2{background:#3d3d48;color:#e4e4e7}.tile-4{background:#4c4c5a;color:#e4e4e7}.tile-8{background:#71717a;color:#fff}.tile-16{background:#a1a1aa;color:#0f0f14}.tile-32{background:#d4d4d8;color:#0f0f14}.tile-64{background:#fafafa;color:#0f0f14}.tile-128{background:#fde047;color:#0f0f14;font-size:24px}.tile-256{background:#facc15;color:#0f0f14;font-size:24px}.tile-512{background:#eab308;color:#0f0f14;font-size:24px}.tile-1024{background:#ca8a04;color:#fff;font-size:20px}.tile-2048{background:#a16207;color:#fff;font-size:20px}.tile-super{background:#713f12;color:#fde047;font-size:18px}
-        .hint { margin-top: 1rem; font-size: 0.8rem; color: #52525b; }
-        .overlay { position: absolute; inset: 0; background: rgba(15,15,20,0.85); border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; }
-        .overlay.hidden { display: none; }
-        .overlay h2 { font-size: 1.5rem; }
-        .overlay button { padding: 0.6rem 1.2rem; font-size: 1rem; border: none; border-radius: 8px; background: #3d3d48; color: #fff; cursor: pointer; }
-        .overlay button:hover { background: #52525b; }
-    </style>
-</head>
-<body>
-    <div class="header"><h1>2048</h1><div class="score-box">Счёт: <span id="score">0</span></div></div>
-    <div class="grid-wrap">
-        <div class="grid" id="grid"></div>
-        <div class="overlay hidden" id="overlay"><h2 id="overlayTitle">Игра окончена</h2><button id="restartBtn">Новая игра</button></div>
-    </div>
-    <p class="hint">Стрелки или свайп</p>
-    <script>
-(function(){
-    const SIZE=4,CELL=66,GAP=8;let grid=[],score=0,touch=null;
-    const $=id=>document.getElementById(id);
-    const gridEl=$('grid'),scoreEl=$('score'),overlay=$('overlay'),title=$('overlayTitle');
-    function empty(){return Array(SIZE).fill(null).map(()=>Array(SIZE).fill(0));}
-    function cells(){gridEl.innerHTML='';for(let i=0;i<SIZE*SIZE;i++){const d=document.createElement('div');d.className='cell';gridEl.appendChild(d);}}
-    function pos(r,c){return{top:GAP+r*(CELL+GAP),left:GAP+c*(CELL+GAP),width:CELL,height:CELL};}
-    function render(){
-        gridEl.querySelectorAll('.tile').forEach(t=>t.remove());
-        for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++){
-            const v=grid[r][c];if(!v)continue;
-            const t=document.createElement('div');t.className='tile tile-'+(v<=2048?v:'super');t.textContent=v;
-            const p=pos(r,c);Object.assign(t.style,{top:p.top+'px',left:p.left+'px',width:p.width+'px',height:p.height+'px'});
-            gridEl.appendChild(t);
-        }
-        scoreEl.textContent=score;
-    }
-    function rndEmpty(){const e=[];for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++)if(!grid[r][c])e.push([r,c]);return e.length?e[Math.floor(Math.random()*e.length)]:null;}
-    function spawn(){const p=rndEmpty();if(!p)return;grid[p[0]][p[1]]=Math.random()<.9?2:4;}
-    function move(dir){
-        let moved=false;const R=[0,1,2,3],C=[0,1,2,3];
-        if(dir==='down')R.reverse();if(dir==='right')C.reverse();
-        const vert=dir==='up'||dir==='down';
-        for(const a of(vert?C:R)){
-            const line=(vert?R:C).map(b=>vert?grid[b][a]:grid[a][b]).filter(v=>v);
-            const m=[];let i=0;
-            while(i<line.length){if(i+1<line.length&&line[i]===line[i+1]){m.push(line[i]*2);score+=line[i]*2;i+=2;moved=true;}else{m.push(line[i]);i++;}}
-            const f=[...m,...Array(SIZE-m.length).fill(0)];
-            if(dir==='down'||dir==='right')f.reverse();
-            (vert?R:C).forEach((b,i)=>{const[r,c]=vert?[b,a]:[a,b];if(grid[r][c]!==f[i])moved=true;grid[r][c]=f[i];});
-        }
-        if(moved)spawn();return moved;
-    }
-    function canMove(){for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++){if(!grid[r][c])return true;const v=grid[r][c];if(c<SIZE-1&&grid[r][c+1]===v)return true;if(r<SIZE-1&&grid[r+1][c]===v)return true;}return false;}
-    function step(d){if(overlay.classList.contains('hidden')&&move(d)){render();if(!canMove()){title.textContent='Игра окончена';overlay.classList.remove('hidden');}}}
-    function init(){grid=empty();score=0;cells();spawn();spawn();render();overlay.classList.add('hidden');}
-    document.addEventListener('keydown',e=>{const m={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right'};if(m[e.key]){e.preventDefault();step(m[e.key]);}});
-    gridEl.addEventListener('touchstart',e=>{touch={x:e.touches[0].clientX,y:e.touches[0].clientY};},{passive:true});
-    gridEl.addEventListener('touchend',e=>{if(!touch)return;const dx=e.changedTouches[0].clientX-touch.x,dy=e.changedTouches[0].clientY-touch.y;if(Math.abs(dx)>Math.abs(dy))step(dx>0?'right':'left');else if(Math.abs(dy)>=30)step(dy>0?'down':'up');touch=null;},{passive:true});
-    $('restartBtn').addEventListener('click',init);init();
-})();
-    </script>
-</body>
-</html>
-HTMLEOF
-# подставляем домен в <title>
-sed -i "s|<title>2048</title>|<title>2048 — ${DOMAIN}</title>|" "${WEBROOT}/index.html"
-info "index.html → ${WEBROOT}/index.html"
-
-# =============================================================================
-section "6. acme.sh — установка"
-# =============================================================================
-if [[ ! -f "${ACME_HOME}/acme.sh" ]]; then
-    info "Устанавливаю acme.sh..."
-    curl -fsSL https://get.acme.sh | sh -s email="${EMAIL}"
-    info "acme.sh установлен"
-else
-    info "acme.sh уже установлен"
-fi
-ACME="${ACME_HOME}/acme.sh"
-[[ ! -f "${ACME}" ]] && error "acme.sh не найден: ${ACME}"
-export PATH="${ACME_HOME}:${PATH}"
-
-# =============================================================================
-section "7. Выпуск сертификата (dns-01, ${DNS_PROVIDER})"
-# =============================================================================
-SKIP_CERT=0
-if [[ -f "${NGINX_DIR}/fullchain.pem" ]]; then
-    EXPIRY=$(openssl x509 -enddate -noout -in "${NGINX_DIR}/fullchain.pem" 2>/dev/null | cut -d= -f2 || true)
-    if [[ -n "$EXPIRY" ]]; then
-        EXPIRY_EPOCH=$(date -d "${EXPIRY}" +%s 2>/dev/null || echo 0)
-        NOW_EPOCH=$(date +%s)
-        DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
-        if [[ $DAYS_LEFT -gt 30 ]]; then
-            info "Сертификат действителен ещё ${DAYS_LEFT} дней — пропускаю выпуск"
-            SKIP_CERT=1
-        else
-            warn "Сертификат истекает через ${DAYS_LEFT} дней — перевыпускаю"
-        fi
-    fi
-fi
-
-if [[ $SKIP_CERT -eq 0 ]]; then
-    info "Выпускаю сертификат для ${DOMAIN} (EC-256, Let's Encrypt, dns-01 / ${DNS_PROVIDER})..."
-    "${ACME}" --set-default-ca --server letsencrypt
-
-    ACME_CONF="${ACME_HOME}/account.conf"
-
-    if [[ "$DNS_PROVIDER" == "cf" ]]; then
-        # чистим старые креды обоих провайдеров
-        sed -i '/REGRU_API_Username/d;/REGRU_API_Password/d;/CF_Token/d;/CF_Account_ID/d' "${ACME_CONF}" 2>/dev/null || true
-        echo "CF_Token='${CF_TOKEN}'"        >> "${ACME_CONF}"
-        echo "CF_Account_ID='${CF_ACCOUNT}'" >> "${ACME_CONF}"
-        CF_Token="${CF_TOKEN}" CF_Account_ID="${CF_ACCOUNT}" \
-        "${ACME}" --issue \
-            --dns dns_cf \
-            -d "${DOMAIN}" \
-            --keylength ec-256 \
-            --key-file       "${NGINX_DIR}/privkey.key" \
-            --fullchain-file "${NGINX_DIR}/fullchain.pem" \
-            --force \
-            || error "Не удалось выпустить сертификат. Проверь CF API token и что зона в Cloudflare."
+cmd_self_install() {
+    local src; src=$(readlink -f "$0" 2>/dev/null || echo "$0")
+    if [[ -f "$src" && "$src" != /dev/* && "$src" != /proc/* ]]; then
+        [[ "$src" == "/usr/local/bin/ssfast" ]] || install -m 755 "$src" /usr/local/bin/ssfast
     else
-        sed -i '/REGRU_API_Username/d;/REGRU_API_Password/d;/CF_Token/d;/CF_Account_ID/d' "${ACME_CONF}" 2>/dev/null || true
-        echo "REGRU_API_Username='${REGRU_USER}'" >> "${ACME_CONF}"
-        echo "REGRU_API_Password='${REGRU_PASS}'" >> "${ACME_CONF}"
-        REGRU_API_Username="${REGRU_USER}" REGRU_API_Password="${REGRU_PASS}" \
-        "${ACME}" --issue \
-            --dns dns_regru \
-            -d "${DOMAIN}" \
-            --keylength ec-256 \
-            --key-file       "${NGINX_DIR}/privkey.key" \
-            --fullchain-file "${NGINX_DIR}/fullchain.pem" \
-            --force \
-            || error "Не удалось выпустить сертификат. Проверь логин/пароль reg.ru и DNS."
+        # запущены через curl | bash — тянем себя с origin
+        curl -fsSL "$RAW_URL" -o /usr/local/bin/ssfast && chmod 755 /usr/local/bin/ssfast \
+            || warn "Не удалось положить ssfast в /usr/local/bin (${RAW_URL})"
+    fi
+    cat > /etc/bash_completion.d/ssfast <<'EOF'
+_ssfast() {
+    local cur prev names
+    cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
+    case "$prev" in
+        --dns) COMPREPLY=($(compgen -W "regru cf" -- "$cur")); return ;;
+        remove|renew) names=$(cut -d'|' -f1 /opt/nginx/domains.conf 2>/dev/null)
+                      COMPREPLY=($(compgen -W "$names" -- "$cur")); return ;;
+    esac
+    [[ $COMP_CWORD -eq 1 ]] && COMPREPLY=($(compgen -W "init add remove list sync renew" -- "$cur"))
+}
+complete -F _ssfast ssfast
+EOF
+    info "ssfast → /usr/local/bin/ssfast (автодополнение после релогина)"
+}
+
+# =============================================================================
+#  init
+# =============================================================================
+cmd_init() {
+    section "Проверка remnanode"
+    [[ -f "${REMNANODE_DIR}/docker-compose.yml" ]] \
+        || error "Не найден ${REMNANODE_DIR}/docker-compose.yml"
+
+    if grep -q '/dev/shm' "${REMNANODE_DIR}/docker-compose.yml"; then
+        info "/dev/shm уже пробросен в remnanode"
+    else
+        warn "/dev/shm не проброшен в remnanode — добавь вручную в его docker-compose.yml:"
+        echo -e "    ${CYAN}volumes:\n      - /dev/shm:/dev/shm:rw${NC}"
+        echo -e "    ${GRAY}затем: docker compose -f ${REMNANODE_DIR}/docker-compose.yml up -d --force-recreate${NC}"
     fi
 
-    info "Сертификат → ${NGINX_DIR}/fullchain.pem, privkey.key"
+    section "Зависимости"
+    local pkgs=()
+    for p in curl socat wget cron openssl ca-certificates dnsutils; do
+        dpkg -s "$p" &>/dev/null || pkgs+=("$p")
+    done
+    if [[ ${#pkgs[@]} -gt 0 ]]; then
+        apt-get update -qq && apt-get install -y -qq "${pkgs[@]}"
+        info "Установлено: ${pkgs[*]}"
+    fi
 
-    "${ACME}" --install-cert -d "${DOMAIN}" \
-        --ecc \
-        --key-file       "${NGINX_DIR}/privkey.key" \
-        --fullchain-file "${NGINX_DIR}/fullchain.pem" \
-        --reloadcmd      "docker compose -f ${NGINX_DIR}/docker-compose.yml restart 2>/dev/null || true"
-fi
+    if ! grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null; then
+        printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' >> /etc/sysctl.conf
+        sysctl -p >/dev/null && info "BBR включён"
+    fi
 
-# =============================================================================
-section "9. nginx.conf"
-# =============================================================================
-cat > "${NGINX_DIR}/nginx.conf" << NGEOF
+    section "Структура"
+    mkdir -p "$CONF_D" "$CERTS" "$HTML"
+    touch "$DOMAINS_FILE"
+    [[ -f "$ENV_FILE" ]] || { : > "$ENV_FILE"; }
+    chmod 600 "$ENV_FILE"
+
+    # креды, переданные в одну строку, сохраняем — при следующих вызовах не нужны
+    for v in REGRU_API_Username REGRU_API_Password CF_Token CF_Account_ID ACME_EMAIL DEFAULT_DNS; do
+        [[ -n "${!v:-}" ]] && ! grep -q "^${v}=" "$ENV_FILE" && echo "${v}='${!v}'" >> "$ENV_FILE"
+    done
+
+    cat > "${CONF_D}/00-common.conf" <<'EOF'
 server_names_hash_bucket_size 64;
-map \$http_upgrade \$connection_upgrade {
+
+map $http_upgrade $connection_upgrade {
     default upgrade;
     ""      close;
 }
+
 ssl_protocols TLSv1.2 TLSv1.3;
 ssl_ecdh_curve X25519:prime256v1:secp384r1;
-ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
 ssl_prefer_server_ciphers on;
 ssl_session_timeout 1d;
 ssl_session_cache shared:MozSSL:10m;
 ssl_session_tickets off;
-server {
-    server_name ${DOMAIN};
-    listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
-    http2 on;
-    ssl_certificate     /etc/nginx/ssl/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/privkey.key;
-    ssl_trusted_certificate /etc/nginx/ssl/fullchain.pem;
-    root /var/www/html;
-    index index.html;
-    add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-}
+
 server {
     listen unix:/dev/shm/nginx.sock ssl proxy_protocol default_server;
     server_name _;
     ssl_reject_handshake on;
     return 444;
 }
-NGEOF
-info "nginx.conf → ${NGINX_DIR}/nginx.conf"
+EOF
 
-# =============================================================================
-section "10. docker-compose.yml"
-# =============================================================================
-cat > "${NGINX_DIR}/docker-compose.yml" << DCEOF
+    cat > "$COMPOSE" <<EOF
 services:
-  remnanode-nginx:
+  ${CONTAINER}:
     image: nginx:1.28
-    container_name: remnanode-nginx
-    hostname: remnanode-nginx
+    container_name: ${CONTAINER}
+    hostname: ${CONTAINER}
     restart: always
     ulimits:
-      nofile:
-        soft: 1048576
-        hard: 1048576
+      nofile: { soft: 1048576, hard: 1048576 }
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./conf.d:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/ssl:ro
       - ./html:/var/www/html:ro
-      - ./fullchain.pem:/etc/nginx/ssl/fullchain.pem:ro
-      - ./privkey.key:/etc/nginx/ssl/privkey.key:ro
       - /dev/shm:/dev/shm:rw
-    command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
+    command: sh -c 'rm -f ${SOCK} && exec nginx -g "daemon off;"'
     network_mode: host
     logging:
       driver: json-file
-      options:
-        max-size: 30m
-        max-file: "5"
-DCEOF
-info "docker-compose.yml → ${NGINX_DIR}/docker-compose.yml"
+      options: { max-size: 30m, max-file: "5" }
+EOF
+
+    section "acme.sh"
+    if [[ ! -f "$ACME" ]]; then
+        curl -fsSL https://get.acme.sh | sh -s email="${ACME_EMAIL:-admin@${HOSTNAME:-localhost}}"
+    fi
+    [[ -f "$ACME" ]] || error "acme.sh не установился"
+    "$ACME" --set-default-ca --server letsencrypt >/dev/null
+    info "acme.sh готов"
+
+    section "UFW"
+    ufw allow 22/tcp  comment 'SSH'         >/dev/null 2>&1 || true
+    ufw allow 443/tcp comment 'HTTPS/VLESS' >/dev/null 2>&1 || true
+    ufw --force enable >/dev/null 2>&1 || true
+
+    section "Запуск nginx"
+    cd "$NGINX_DIR"
+    docker compose pull -q "$CONTAINER" || true
+    docker compose up -d --no-deps "$CONTAINER"
+    sleep 2
+    [[ -S "$SOCK" ]] && info "Socket готов: $SOCK" || warn "Socket ещё не появился"
+
+    cmd_self_install
+
+    echo ""
+    info "Готово. Дальше достаточно: ${CYAN}ssfast add layerzro.ru${NC}"
+}
 
 # =============================================================================
-section "11. UFW"
+#  html
 # =============================================================================
-ufw allow 22/tcp  comment 'SSH'         > /dev/null 2>&1 || true
-ufw allow 443/tcp comment 'HTTPS/VLESS' > /dev/null 2>&1 || true
-ufw --force enable > /dev/null 2>&1 || true
-ufw reload         > /dev/null 2>&1 || true
-info "UFW: открыты 22, 443"
+gen_html() {
+    local name="$1" dir="${HTML}/${name}"
+    mkdir -p "$dir"
+    [[ -f "${dir}/index.html" ]] && return 0
+    cat > "${dir}/index.html" <<EOF
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${name}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+font-family:system-ui,-apple-system,'Segoe UI',sans-serif;
+background:linear-gradient(145deg,#0f0f14 0%,#1a1a24 100%);color:#e4e4e7}
+main{text-align:center}h1{font-size:1.75rem;font-weight:600;color:#fafafa}
+p{margin-top:.5rem;font-size:.9rem;color:#52525b}
+</style></head>
+<body><main><h1>${name}</h1><p>Service is running</p></main></body></html>
+EOF
+    info "index.html → ${dir}/index.html"
+}
 
 # =============================================================================
-section "12. Запуск"
+#  add
 # =============================================================================
-docker stop remnanode-nginx 2>/dev/null || true
-docker rm   remnanode-nginx 2>/dev/null || true
-cd "${NGINX_DIR}"
-docker compose pull -q remnanode-nginx
-docker compose up -d --no-deps remnanode-nginx
-info "remnanode-nginx запущен"
-sleep 2
-if [[ -S "${NGINX_SOCK}" ]]; then
-    info "Unix socket готов: ${NGINX_SOCK}"
-else
-    warn "Socket ещё не появился — подожди несколько секунд"
-fi
+cmd_add() {
+    [[ -d "$CONF_D" && -f "$COMPOSE" ]] || { warn "Окружение не развёрнуто — запускаю init"; cmd_init; }
+
+    local name="" dns="" html_src="" domains=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            --dns)  dns="$2";  shift 2 ;;
+            --html) html_src="$2"; shift 2 ;;
+            -*)     error "Неизвестный флаг: $1" ;;
+            *)      domains+=("$1"); shift ;;
+        esac
+    done
+    [[ ${#domains[@]} -eq 0 ]] && error "Usage: ssfast.sh add <domain> [доп.домены...] [--name LABEL] [--dns regru|cf]"
+    [[ -z "$name" ]] && name="${domains[0]}"
+    if [[ -z "$dns" ]]; then
+        dns=$(detect_dns "${domains[0]}")
+        info "DNS-провайдер определён по NS: ${dns} (переопределить: --dns regru|cf)"
+    fi
+    [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || error "Недопустимое имя набора: $name"
+
+    local primary="${domains[0]}"
+    local cert_dir="${CERTS}/${name}"
+    local conf="${CONF_D}/${name}.conf"
+    mkdir -p "$cert_dir"
+
+    section "DNS-проверка"
+    local server_ip; server_ip=$(curl -fsS --max-time 5 https://api.ipify.org || true)
+    for d in "${domains[@]}"; do
+        local ips; ips=$(getent hosts "$d" | awk '{print $1}' | tr '\n' ' ')
+        [[ -z "$ips" ]] && error "Домен $d не резолвится — добавь A-запись"
+        if [[ -n "$server_ip" && " $ips " == *" $server_ip "* ]]; then
+            info "$d → $ips (совпадает с сервером)"
+        else
+            warn "$d → $ips (IP сервера $server_ip не найден; для dns-01 это не критично)"
+        fi
+    done
+
+    section "Сертификат: ${name}"
+    local days
+    if days=$(cert_days_left "${cert_dir}/fullchain.pem") && [[ $days -gt $RENEW_DAYS ]]; then
+        info "Уже установлен, валиден ещё ${days} дн. — выпуск пропущен"
+    elif days=$(cert_days_left "${ACME_HOME}/${primary}_ecc/fullchain.cer") && [[ $days -gt $RENEW_DAYS ]]; then
+        info "Найден в хранилище acme.sh (${days} дн.) — ставлю без обращения к CA"
+        install_cert "$name" "$primary"
+    else
+        dns_env_check "$dns"
+        local args=()
+        for d in "${domains[@]}"; do args+=(-d "$d"); done
+        info "Выпускаю (${dns}, ec-256): ${domains[*]}"
+        "$ACME" --issue --dns "$(dns_plugin "$dns")" "${args[@]}" --keylength ec-256 \
+            || error "Выпуск не удался — проверь креды ${dns} и DNS-зону"
+        install_cert "$name" "$primary"
+    fi
+
+    section "Контент"
+    if [[ -n "$html_src" ]]; then
+        mkdir -p "${HTML}/${name}"
+        cp -r "${html_src%/}/." "${HTML}/${name}/"
+        info "Скопировано из ${html_src}"
+    else
+        gen_html "$name"
+    fi
+
+    section "nginx"
+    local server_names="${domains[*]}"
+    cat > "$conf" <<EOF
+server {
+    server_name ${server_names};
+    listen unix:${SOCK} ssl proxy_protocol;
+    http2 on;
+
+    ssl_certificate         /etc/nginx/ssl/${name}/fullchain.pem;
+    ssl_certificate_key     /etc/nginx/ssl/${name}/privkey.key;
+    ssl_trusted_certificate /etc/nginx/ssl/${name}/fullchain.pem;
+
+    root  /var/www/html/${name};
+    index index.html;
+    add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
+
+    location / { try_files \$uri \$uri/ =404; }
+}
+EOF
+    info "conf → ${conf}"
+
+    registry_put "$name" "$dns" "$(IFS=,; echo "${domains[*]}")"
+    reload_nginx
+
+    echo ""
+    echo -e "${YELLOW}В инбаунде xray (Reality):${NC}"
+    echo -e "  ${CYAN}\"dest\": \"${SOCK}\", \"xver\": 1${NC}"
+    echo -e "  ${CYAN}\"serverNames\": [$(printf '"%s", ' "${domains[@]}" | sed 's/, $//')]${NC}"
+}
+
+install_cert() {
+    local name="$1" primary="$2"
+    "$ACME" --install-cert -d "$primary" --ecc \
+        --key-file       "${CERTS}/${name}/privkey.key" \
+        --fullchain-file "${CERTS}/${name}/fullchain.pem" \
+        --reloadcmd      "docker exec ${CONTAINER} nginx -s reload 2>/dev/null || true"
+    info "Установлен → ${CERTS}/${name}/"
+}
 
 # =============================================================================
-echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║          Self-steal установлен успешно!              ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "  DNS-провайдер: ${CYAN}${DNS_PROVIDER}${NC}"
-echo -e "  Структура ${CYAN}/opt/nginx/${NC}"
-echo -e "  ${GRAY}├── html/index.html${NC}"
-echo -e "  ${GRAY}├── docker-compose.yml${NC}"
-echo -e "  ${GRAY}├── nginx.conf${NC}"
-echo -e "  ${GRAY}├── fullchain.pem${NC}"
-echo -e "  ${GRAY}└── privkey.key${NC}"
-echo ""
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}  В конфиге remnanode (xray) укажи:${NC}"
-echo -e ""
-echo -e "  ${CYAN}\"dest\": \"/dev/shm/nginx.sock\"${NC}"
-echo -e "  ${CYAN}\"xver\": 1${NC}"
-echo -e "  ${CYAN}\"serverNames\": [\"${DOMAIN}\"]${NC}"
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-echo -e "${GRAY}Логи:    docker compose -f ${NGINX_DIR}/docker-compose.yml logs -f${NC}"
-echo -e "${GRAY}Рестарт: docker compose -f ${NGINX_DIR}/docker-compose.yml restart${NC}"
-echo ""
+#  remove / list / sync / renew
+# =============================================================================
+cmd_remove() {
+    local name="${1:?Usage: ssfast.sh remove <name>}"
+    local line; line=$(registry_get "$name")
+    [[ -z "$line" ]] && warn "В реестре нет набора ${name} — чищу файлы, если остались"
+
+    rm -f "${CONF_D}/${name}.conf"
+    registry_del "$name"
+    reload_nginx
+    info "Конфиг ${name} удалён из nginx"
+    echo -e "${GRAY}Сертификат и html оставлены: ${CERTS}/${name}, ${HTML}/${name}${NC}"
+    echo -e "${GRAY}Удалить полностью: rm -rf ${CERTS}/${name} ${HTML}/${name}${NC}"
+    [[ -n "$line" ]] && echo -e "${GRAY}Снять с автопродления: ${ACME} --remove -d $(echo "$line" | cut -d'|' -f3 | cut -d, -f1) --ecc${NC}"
+}
+
+cmd_list() {
+    [[ -s "$DOMAINS_FILE" ]] || { info "Реестр пуст"; return 0; }
+    printf "%-22s %-7s %-10s %s\n" "NAME" "DNS" "EXPIRES" "DOMAINS"
+    while IFS='|' read -r name dns doms; do
+        [[ -z "$name" ]] && continue
+        local d; d=$(cert_days_left "${CERTS}/${name}/fullchain.pem" || echo "-")
+        printf "%-22s %-7s %-10s %s\n" "$name" "$dns" "${d} дн." "$doms"
+    done < "$DOMAINS_FILE"
+}
+
+cmd_sync() {
+    [[ -s "$DOMAINS_FILE" ]] || { warn "Реестр пуст"; return 0; }
+    while IFS='|' read -r name dns doms; do
+        [[ -z "$name" ]] && continue
+        info "Синхронизирую ${name}"
+        # shellcheck disable=SC2086
+        cmd_add ${doms//,/ } --name "$name" --dns "$dns"
+    done < "$DOMAINS_FILE"
+}
+
+cmd_renew() {
+    local target="${1:-}"
+    while IFS='|' read -r name dns doms; do
+        [[ -z "$name" ]] && continue
+        [[ -n "$target" && "$target" != "$name" ]] && continue
+        dns_env_check "$dns"
+        local primary="${doms%%,*}"
+        info "Продлеваю ${name} (${primary})"
+        "$ACME" --renew -d "$primary" --ecc --force || warn "Не удалось продлить ${name}"
+    done < "$DOMAINS_FILE"
+    reload_nginx
+}
+
+# =============================================================================
+case "${1:-}" in
+    init)   shift; cmd_init "$@" ;;
+    add)    shift; cmd_add "$@" ;;
+    remove) shift; cmd_remove "$@" ;;
+    list)   shift; cmd_list "$@" ;;
+    sync)   shift; cmd_sync "$@" ;;
+    renew)  shift; cmd_renew "$@" ;;
+    self-install) shift; cmd_self_install ;;
+    *.*)    cmd_add "$@" ;;          # ssfast layerzro.ru == ssfast add layerzro.ru
+    *)      [[ -f "$0" ]] && sed -n '3,15p' "$0" | sed 's/^# \{0,2\}//' \
+                          || echo "ssfast <domain> | init | add | remove | list | sync | renew" ;;
+esac
