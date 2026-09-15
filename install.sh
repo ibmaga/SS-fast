@@ -56,6 +56,27 @@ detect_dns() {
     esac
 }
 
+write_site_conf() {
+    local d="$1" names="$2"
+    cat > "$CONF_D/${d}.conf" <<CONF
+server {
+    server_name ${names};
+    listen unix:$SOCK ssl proxy_protocol;
+    http2 on;
+
+    ssl_certificate         /etc/nginx/ssl/${d}-fullchain.pem;
+    ssl_certificate_key     /etc/nginx/ssl/${d}-privkey.key;
+    ssl_trusted_certificate /etc/nginx/ssl/${d}-fullchain.pem;
+
+    root  /var/www/html;
+    index index.html;
+    add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
+
+    location / { try_files \$uri \$uri/ =404; }
+}
+CONF
+}
+
 # --- разовое разворачивание, если ещё нет ------------------------------------
 bootstrap() {
     local fresh=0
@@ -87,6 +108,28 @@ bootstrap() {
     [[ -d "$DIR/certs" ]] && { rm -rf "$DIR/certs"; warn "удалил устаревший $DIR/certs"; }
 
     mkdir -p "$CONF_D" "$DIR/html"
+
+    # --- миграция со старой раскладки (nginx.conf как default.conf) ----------
+    if [[ -f "$DIR/nginx.conf" ]]; then
+        local old_d
+        old_d=$(awk '/^[[:space:]]*server_name[[:space:]]+[^_;]/{sub(/;/,"");print $2;exit}' "$DIR/nginx.conf" || true)
+        if [[ -n "$old_d" && ! -f "$CONF_D/${old_d}.conf" ]]; then
+            info "миграция: переношу $old_d из nginx.conf в conf.d/"
+            # сертификаты под новые имена; старые пути оставляем симлинками — их читает hysteria
+            if [[ -f "$DIR/fullchain.pem" && ! -e "$DIR/${old_d}-fullchain.pem" ]]; then
+                mv "$DIR/fullchain.pem" "$DIR/${old_d}-fullchain.pem"
+                ln -sf "${old_d}-fullchain.pem" "$DIR/fullchain.pem"
+            fi
+            if [[ -f "$DIR/privkey.key" && ! -e "$DIR/${old_d}-privkey.key" ]]; then
+                mv "$DIR/privkey.key" "$DIR/${old_d}-privkey.key"
+                ln -sf "${old_d}-privkey.key" "$DIR/privkey.key"
+            fi
+            write_site_conf "$old_d" "$old_d"
+            mv "$DIR/nginx.conf" "$DIR/nginx.conf.migrated"
+            info "миграция: conf.d/${old_d}.conf создан, старые пути сертификатов — симлинки"
+        fi
+    fi
+    rm -f "$DIR/domains.conf"
     [[ -f "$DIR/html/index.html" ]] || cat > "$DIR/html/index.html" <<'HTML'
 <!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Service</title>
@@ -159,6 +202,7 @@ COMPOSE
 
     ufw allow 22/tcp  comment 'SSH'         >/dev/null 2>&1 || true
     ufw allow 443/tcp comment 'HTTPS/VLESS' >/dev/null 2>&1 || true
+    ufw allow 443/udp comment 'Hysteria2'   >/dev/null 2>&1 || true
     ufw --force enable >/dev/null 2>&1 || true
 
     local self; self=$(readlink -f "$0" 2>/dev/null || echo "$0")
@@ -231,25 +275,9 @@ fi
 
 "$ACME" --install-cert -d "$D" --ecc \
     --key-file "$KEY" --fullchain-file "$CERT" \
-    --reloadcmd "docker exec $CT nginx -s reload 2>/dev/null || true"
+    --reloadcmd "docker exec $CT nginx -s reload 2>/dev/null || true; docker restart remnanode >/dev/null 2>&1 || true"
 
-cat > "$CONF_D/${D}.conf" <<CONF
-server {
-    server_name ${DOMAINS[*]};
-    listen unix:$SOCK ssl proxy_protocol;
-    http2 on;
-
-    ssl_certificate         /etc/nginx/ssl/${D}-fullchain.pem;
-    ssl_certificate_key     /etc/nginx/ssl/${D}-privkey.key;
-    ssl_trusted_certificate /etc/nginx/ssl/${D}-fullchain.pem;
-
-    root  /var/www/html;
-    index index.html;
-    add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
-
-    location / { try_files \$uri \$uri/ =404; }
-}
-CONF
+write_site_conf "$D" "${DOMAINS[*]}"
 
 reload
 
