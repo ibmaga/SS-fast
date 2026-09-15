@@ -219,7 +219,8 @@ COMPOSE
         docker compose up -d --no-deps "$CT"
         sleep 2
     fi
-    [[ $fresh -eq 1 ]] && info "окружение готово"
+    if [[ $fresh -eq 1 ]]; then info "окружение готово"; fi
+    return 0
 }
 
 # --- list --------------------------------------------------------------------
