@@ -58,22 +58,33 @@ detect_dns() {
 
 # --- разовое разворачивание, если ещё нет ------------------------------------
 bootstrap() {
-    [[ -f "$DIR/docker-compose.yml" && -d "$CONF_D" ]] && return 0
-    info "Первый запуск — разворачиваю окружение"
+    local fresh=0
+    [[ -f "$DIR/docker-compose.yml" && -d "$CONF_D" ]] || fresh=1
 
-    [[ -f "$REMNANODE/docker-compose.yml" ]] || error "не найден $REMNANODE/docker-compose.yml"
-    grep -q '/dev/shm' "$REMNANODE/docker-compose.yml" \
-        || warn "в remnanode не проброшен /dev/shm — добавь volume '- /dev/shm:/dev/shm:rw' и пересоздай контейнер"
+    if [[ $fresh -eq 1 ]]; then
+        info "Первый запуск — разворачиваю окружение"
+        [[ -f "$REMNANODE/docker-compose.yml" ]] || error "не найден $REMNANODE/docker-compose.yml"
+        grep -q '/dev/shm' "$REMNANODE/docker-compose.yml" \
+            || warn "в remnanode не проброшен /dev/shm — добавь volume '- /dev/shm:/dev/shm:rw' и пересоздай контейнер"
 
-    local pkgs=()
-    for p in curl socat wget cron openssl ca-certificates dnsutils; do
-        dpkg -s "$p" &>/dev/null || pkgs+=("$p")
-    done
-    [[ ${#pkgs[@]} -gt 0 ]] && { apt-get update -qq; apt-get install -y -qq "${pkgs[@]}"; }
+        local pkgs=()
+        for p in curl socat wget cron openssl ca-certificates dnsutils; do
+            dpkg -s "$p" &>/dev/null || pkgs+=("$p")
+        done
+        [[ ${#pkgs[@]} -gt 0 ]] && { apt-get update -qq; apt-get install -y -qq "${pkgs[@]}"; }
 
-    grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null || {
-        printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' >> /etc/sysctl.conf
-        sysctl -p >/dev/null; }
+        grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null || {
+            printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' >> /etc/sysctl.conf
+            sysctl -p >/dev/null; }
+    fi
+
+    # миграция со старой раскладки: креды не должны лежать в смонтированном каталоге
+    if [[ -f "$DIR/.env" ]]; then
+        cat "$DIR/.env" >> "$ENV_FILE" 2>/dev/null || true
+        rm -f "$DIR/.env"; chmod 600 "$ENV_FILE"
+        warn "перенёс $DIR/.env → $ENV_FILE (каталог монтируется в контейнер)"
+    fi
+    [[ -d "$DIR/certs" ]] && { rm -rf "$DIR/certs"; warn "удалил устаревший $DIR/certs"; }
 
     mkdir -p "$CONF_D" "$DIR/html"
     [[ -f "$DIR/html/index.html" ]] || cat > "$DIR/html/index.html" <<'HTML'
@@ -107,7 +118,7 @@ server {
 }
 CONF
 
-    cat > "$DIR/docker-compose.yml" <<COMPOSE
+    cat > "$DIR/.compose.new" <<COMPOSE
 services:
   $CT:
     image: nginx:1.28
@@ -128,6 +139,15 @@ services:
       options: { max-size: 30m, max-file: "5" }
 COMPOSE
 
+    local recreate=0
+    if ! cmp -s "$DIR/.compose.new" "$DIR/docker-compose.yml" 2>/dev/null; then
+        mv "$DIR/.compose.new" "$DIR/docker-compose.yml"
+        recreate=1
+        [[ $fresh -eq 0 ]] && warn "docker-compose.yml изменился (volumes) — пересоздаю контейнер"
+    else
+        rm -f "$DIR/.compose.new"
+    fi
+
     [[ -f "$ACME" ]] || curl -fsSL https://get.acme.sh | sh -s email="${ACME_EMAIL:-admin@$(hostname -f 2>/dev/null || hostname)}"
     [[ -f "$ACME" ]] || error "acme.sh не установился"
     "$ACME" --set-default-ca --server letsencrypt >/dev/null
@@ -146,8 +166,16 @@ COMPOSE
         install -m 755 "$self" /usr/local/bin/ssfast && info "ssfast → /usr/local/bin/ssfast"
     fi
 
-    cd "$DIR"; docker compose pull -q "$CT" || true; docker compose up -d --no-deps "$CT"; sleep 2
-    info "окружение готово"
+    cd "$DIR"
+    if [[ $recreate -eq 1 ]]; then
+        docker compose pull -q "$CT" || true
+        docker compose up -d --no-deps --force-recreate "$CT"
+        sleep 2
+    elif ! docker ps --format '{{.Names}}' | grep -qx "$CT"; then
+        docker compose up -d --no-deps "$CT"
+        sleep 2
+    fi
+    [[ $fresh -eq 1 ]] && info "окружение готово"
 }
 
 # --- list --------------------------------------------------------------------
