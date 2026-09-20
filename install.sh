@@ -880,16 +880,29 @@ REGRU_PASS="${REGRU_PASS:-${REGRU_API_Password:-}}"
 
 PROVIDER="${DNS_PROVIDER:-}"
 if [[ -z "${PROVIDER}" ]]; then
-    if   [[ -n "${CF_Token:-}" ]];                       then PROVIDER="cf"
-    elif [[ -n "${REGRU_USER}" && -n "${REGRU_PASS}" ]]; then PROVIDER="regru"
-    else error "Нет кред DNS. Дай CF_Token(+CF_Account_ID) или REGRU_USER+REGRU_PASS"; fi
+    if   [[ -n "${CF_Token:-}" || ( -n "${CF_Key:-}" && -n "${CF_Email:-}" ) ]]; then PROVIDER="cf"
+    elif [[ -n "${REGRU_USER}" && -n "${REGRU_PASS}" ]];                          then PROVIDER="regru"
+    else error "Нет кред DNS. Дай CF_Key+CF_Email, или CF_Token+CF_Account_ID, или REGRU_USER+REGRU_PASS"; fi
 fi
 case "${PROVIDER}" in
     cf)
-        [[ -z "${CF_Token:-}" ]] && error "PROVIDER=cf, но CF_Token пуст"
-        [[ -z "${CF_Account_ID:-}" && -z "${CF_Zone_ID:-}" ]] && \
-            error "Для Cloudflare нужен CF_Account_ID (или CF_Zone_ID). Один CF_Token не пройдёт — вики acme.sh dns_cf"
-        DNS_HOOK="dns_cf"; info "DNS: Cloudflare (dns_cf)" ;;
+        # Cloudflare, любой из рабочих паттернов acme.sh dns_cf:
+        #   CF_Token                       — токен с Zone.Zone:Read+Zone.DNS:Edit по всем зонам (acme сам найдёт zone/account)
+        #   CF_Token + CF_Account_ID       — если токен так ограничен
+        #   CF_Token + CF_Zone_ID (+acc)   — токен на одну зону
+        #   CF_Key + CF_Email              — Global API Key ("через email")
+        if   [[ -n "${CF_Token:-}" ]]; then
+            CF_MODE="token"
+            if [[ -z "${CF_Account_ID:-}" && -z "${CF_Zone_ID:-}" ]]; then
+                warn "CF_Token без CF_Account_ID/CF_Zone_ID: сработает, если у токена Zone.Zone:Read по всем зонам (acme.sh сам определит account/zone). Если токен ограничен одной зоной — добавь CF_Account_ID."
+            fi
+            info "DNS: Cloudflare (API Token)"
+        elif [[ -n "${CF_Key:-}" && -n "${CF_Email:-}" ]]; then
+            CF_MODE="key"; info "DNS: Cloudflare (Global API Key + Email)"
+        else
+            error "cf: дай CF_Token (можно +CF_Account_ID), либо CF_Key+CF_Email"
+        fi
+        DNS_HOOK="dns_cf" ;;
     regru)
         [[ -z "${REGRU_USER}" || -z "${REGRU_PASS}" ]] && error "PROVIDER=regru, но REGRU_USER/PASS пусты"
         DNS_HOOK="dns_regru"; info "DNS: reg.ru (dns_regru)" ;;
@@ -969,9 +982,14 @@ fi
 if [[ $SKIP_CERT -eq 0 ]]; then
     "${ACME}" --set-default-ca --server letsencrypt
     if [[ "${PROVIDER}" == "cf" ]]; then
-        export CF_Token
-        [[ -n "${CF_Account_ID:-}" ]] && export CF_Account_ID
-        [[ -n "${CF_Zone_ID:-}"    ]] && export CF_Zone_ID
+        if [[ "${CF_MODE}" == "key" ]]; then
+            export CF_Key CF_Email
+        else
+            export CF_Token
+            [[ -n "${CF_Email:-}"      ]] && export CF_Email
+            [[ -n "${CF_Account_ID:-}" ]] && export CF_Account_ID
+            [[ -n "${CF_Zone_ID:-}"    ]] && export CF_Zone_ID
+        fi
     else
         export REGRU_API_Username="${REGRU_USER}"
         export REGRU_API_Password="${REGRU_PASS}"
