@@ -912,24 +912,32 @@ esac
 section "1. Проверка remnanode"
 COMPOSE_FILE="${REMNANODE_DIR}/docker-compose.yml"
 [[ ! -f "${COMPOSE_FILE}" ]] && error "Нет ${COMPOSE_FILE} — remnanode не установлен"
-if grep -q '/dev/shm' "${COMPOSE_FILE}"; then
-    info "/dev/shm уже проброшен — OK"
-else
-    warn "Пробрасываю /dev/shm в remnanode"
-    python3 - "${COMPOSE_FILE}" <<'PYEOF'
+REMNA_RECREATE=0
+# нужны два маунта: /dev/shm (сокет Reality) и /opt/nginx (cert для Hysteria2)
+for M in "/dev/shm:/dev/shm:rw" "/opt/nginx:/opt/nginx:ro"; do
+    SRC="${M%%:*}"
+    if grep -q "${SRC}:" "${COMPOSE_FILE}"; then
+        info "${SRC} уже проброшен в remnanode"
+    else
+        warn "Пробрасываю ${SRC} в remnanode"
+        python3 - "${COMPOSE_FILE}" "${M}" <<'PYEOF'
 import re, sys
-p=sys.argv[1]; c=open(p).read()
-if '/dev/shm' in c: sys.exit(0)
+p, mnt = sys.argv[1], sys.argv[2]
+c = open(p).read()
+src = mnt.split(":")[0]
+if re.search(r'(^|\s)-\s*'+re.escape(src)+r':', c):
+    sys.exit(0)
 out=[]; done=False
 for ln in c.splitlines(keepends=True):
     out.append(ln)
     if not done and re.match(r'^(\s+)volumes:\s*$', ln):
         ind=re.match(r'^(\s+)', ln).group(1)
-        out.append(ind+"  - /dev/shm:/dev/shm:rw\n"); done=True
+        out.append(ind+"  - "+mnt+"\n"); done=True
 open(p,"w").writelines(out); print("patched" if done else "no-volumes")
 PYEOF
-    docker compose -f "${COMPOSE_FILE}" up -d --force-recreate remnanode
-fi
+        REMNA_RECREATE=1
+    fi
+done
 
 section "2. Зависимости"
 PKGS=()
@@ -1004,6 +1012,11 @@ if [[ $SKIP_CERT -eq 0 ]]; then
     info "Cert → ${NGINX_DIR}/fullchain.pem"
 fi
 
+# Hysteria2/панель читают cert с диска по имени <domain>-fullchain.pem — даём алиасы
+ln -sf "${NGINX_DIR}/fullchain.pem" "${NGINX_DIR}/${DOMAIN}-fullchain.pem"
+ln -sf "${NGINX_DIR}/privkey.key"   "${NGINX_DIR}/${DOMAIN}-privkey.key"
+info "cert-алиасы: ${DOMAIN}-fullchain.pem / ${DOMAIN}-privkey.key"
+
 section "7. docker-compose.yml"
 cat > "${NGINX_DIR}/docker-compose.yml" <<DCEOF
 services:
@@ -1046,6 +1059,22 @@ docker compose pull -q "${CONTAINER}" || true
 docker compose up -d --no-deps "${CONTAINER}"
 sleep 2
 [[ -S "${NGINX_SOCK}" ]] && info "Socket: ${NGINX_SOCK}" || warn "Socket ещё не появился"
+
+section "10. remnanode (маунты + перечитать конфиг xray)"
+# теперь на диске есть cert, cert-алиасы и сокет — поднимаем remnanode с маунтами
+if [[ ${REMNA_RECREATE} -eq 1 ]]; then
+    docker compose -f "${COMPOSE_FILE}" up -d --force-recreate remnanode || warn "не смог пересоздать remnanode"
+    info "remnanode пересоздан с маунтами /dev/shm и /opt/nginx"
+else
+    docker compose -f "${COMPOSE_FILE}" restart remnanode >/dev/null 2>&1 || warn "не смог перезапустить remnanode"
+    info "remnanode перезапущен — xray перечитал конфиг"
+fi
+sleep 2
+if docker logs remnanode --tail=30 2>&1 | grep -qi "failed to load config\|no such file"; then
+    warn "xray всё ещё ругается — проверь: docker logs remnanode --tail=40"
+else
+    info "xray стартовал без ошибок cert"
+fi
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
