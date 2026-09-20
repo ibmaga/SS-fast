@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  SS-fast — self-steal nginx для remnanode (Reality fallback)
-#  Сайт-витрина ВСТРОЕН в скрипт (вариант A) — установка одной командой.
+#  SS-fast — self-steal nginx для remnanode (Reality fallback), МУЛЬТИДОМЕН
+#  Сайт встроен в скрипт. Установка нового домена ДОБАВЛЯЕТ его рядом,
+#  существующие домены на этой ноде не трогаются.
 #
 #  УСТАНОВКА:
-#    Cloudflare: CF_Token=.. CF_Account_ID=.. ACME_EMAIL=you@mail bash install.sh <domain>
-#    reg.ru:     REGRU_USER=.. REGRU_PASS=..  ACME_EMAIL=you@mail bash install.sh <domain>
+#    Cloudflare: CF_Token=.. [CF_Account_ID=..] ACME_EMAIL=you@mail bash install.sh <domain>
+#    CF (email): CF_Key=.. CF_Email=..           ACME_EMAIL=you@mail bash install.sh <domain>
+#    reg.ru:     REGRU_USER=.. REGRU_PASS=..      ACME_EMAIL=you@mail bash install.sh <domain>
 #
-#  ОБНОВЛЕНИЕ САЙТА (без cert/compose):
-#    bash install.sh update            # домен из текущего конфига
-#    bash install.sh update <domain>
-#
-#  DNS-провайдер автоопределяется по env, форс: DNS_PROVIDER=cf|regru
+#  ОБНОВЛЕНИЕ САЙТА (для ВСЕХ доменов ноды, без cert/compose):
+#    bash install.sh update
 # =============================================================================
 set -euo pipefail
 
@@ -35,10 +34,8 @@ DOMAIN="${1:-}"
 EMAIL="${ACME_EMAIL:-${2:-}}"
 [[ $EUID -ne 0 ]] && error "Запусти от root"
 
-write_site() {   # $1 = domain
-    local dom="$1"
+write_html() {
     mkdir -p "${WEBROOT}/assets/v1"
-
 cat > "${WEBROOT}/404.html" <<'EOF_404_HTML'
 <!DOCTYPE html><html lang="en"><head>
 <title>Page not found — Northvale Cloud</title>
@@ -773,7 +770,10 @@ cat > "${WEBROOT}/terms.html" <<'EOF_TERMS_HTML'
 <script src="/assets/v1/app.js"></script></body></html>
 EOF_TERMS_HTML
 
-cat > "${NGINX_DIR}/nginx.conf" <<'EOF_NGINX_CONF'
+}
+
+write_shared_nginx() {
+cat > "${NGINX_DIR}/nginx.conf" <<'EOF_NGINX_SHARED'
 server_names_hash_bucket_size 64;
 server_tokens off;
 charset utf-8;
@@ -798,19 +798,35 @@ ssl_session_timeout 1d;
 ssl_session_cache shared:MozSSL:10m;
 ssl_session_tickets off;
 
+# пер-доменные server-блоки (добавляются установкой, друг друга не трогают)
+include /opt/nginx/sites/*.conf;
+
+# чужой SNI на сокете → drop
+server {
+    listen unix:/dev/shm/nginx.sock ssl proxy_protocol default_server;
+    server_name _;
+    ssl_reject_handshake on;
+    return 444;
+}
+EOF_NGINX_SHARED
+}
+
+write_domain_conf() {   # $1 = domain
+    local dom="$1"
+    mkdir -p "${NGINX_DIR}/sites"
+cat > "${NGINX_DIR}/sites/${dom}.conf" <<'EOF_SITE_TPL'
 server {
     server_name __DOMAIN__;
     listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
     http2 on;
 
-    ssl_certificate         /etc/nginx/ssl/fullchain.pem;
-    ssl_certificate_key     /etc/nginx/ssl/privkey.key;
-    ssl_trusted_certificate /etc/nginx/ssl/fullchain.pem;
+    ssl_certificate         /opt/nginx/__DOMAIN__-fullchain.pem;
+    ssl_certificate_key     /opt/nginx/__DOMAIN__-privkey.key;
+    ssl_trusted_certificate /opt/nginx/__DOMAIN__-fullchain.pem;
 
-    root /var/www/html;
+    root /opt/nginx/html;
     index index.html;
 
-    # realistic SaaS headers (inherited by locations without their own add_header)
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Content-Type-Options    "nosniff" always;
     add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
@@ -819,120 +835,106 @@ server {
     error_page 404 /404.html;
     location = /404.html { internal; }
 
-    # cached static — uses `expires` (does not drop inherited add_header)
     location ~* \.(?:css|js|svg|png|jpe?g|ico|webmanifest|woff2?)$ {
         expires 7d;
         access_log off;
     }
 
-    location = /robots.txt  { access_log off; }
-    location = /sitemap.xml { access_log off; }
-
     location / {
         try_files $uri $uri/ =404;
     }
 }
-
-# any other SNI arriving on the socket → drop
-server {
-    listen unix:/dev/shm/nginx.sock ssl proxy_protocol default_server;
-    server_name _;
-    ssl_reject_handshake on;
-    return 444;
+EOF_SITE_TPL
+    sed -i "s/__DOMAIN__/${dom}/g" "${NGINX_DIR}/sites/${dom}.conf"
 }
-EOF_NGINX_CONF
-    sed -i "s/__DOMAIN__/${dom}/g" "${NGINX_DIR}/nginx.conf"
-    info "Сайт записан в ${WEBROOT}/ ($(find "${WEBROOT}" -type f | wc -l) файлов), домен: ${dom}"
+
+migrate_old_layout() {
+    local conf="${NGINX_DIR}/nginx.conf"
+    [[ -f "$conf" ]] || return 0
+    grep -q 'include /opt/nginx/sites/' "$conf" && return 0   # уже новый формат
+    local olddom
+    olddom=$(grep -oP 'server_name\s+\K[^;]+' "$conf" 2>/dev/null | grep -v '^_$' | head -1 || true)
+    [[ -z "$olddom" ]] && { warn "Старый nginx.conf без домена — пересоздаю в новом формате"; return 0; }
+    info "Миграция старого формата: переношу ${olddom} в sites/"
+    mkdir -p "${NGINX_DIR}/sites"
+    if [[ -e "${NGINX_DIR}/fullchain.pem" && ! -e "${NGINX_DIR}/${olddom}-fullchain.pem" ]]; then
+        cp -aL "${NGINX_DIR}/fullchain.pem" "${NGINX_DIR}/${olddom}-fullchain.pem"
+        cp -aL "${NGINX_DIR}/privkey.key"   "${NGINX_DIR}/${olddom}-privkey.key"
+    fi
+    write_domain_conf "${olddom}"
+    info "Домен ${olddom} сохранён → sites/${olddom}.conf"
 }
 
 nginx_reload() {
     if docker exec "${CONTAINER}" nginx -t >/dev/null 2>&1; then
         docker exec "${CONTAINER}" nginx -s reload >/dev/null 2>&1 && { info "nginx reloaded"; return; }
     fi
-    warn "nginx -s reload не прошёл, делаю restart контейнера"
+    warn "reload не прошёл — restart контейнера"
     docker compose -f "${NGINX_DIR}/docker-compose.yml" restart >/dev/null 2>&1 || true
 }
 
 # =============================================================================
-#  UPDATE — только переписать сайт на установленной ноде
+#  UPDATE — обновить сайт-витрину для ВСЕХ доменов ноды
 # =============================================================================
 if [[ "${MODE}" == "update" ]]; then
-    section "UPDATE: обновление сайта"
-    [[ -d "${NGINX_DIR}" ]] || error "ss-fast не установлен (${NGINX_DIR} нет)"
-    if [[ -z "${DOMAIN}" ]]; then
-        DOMAIN="$(grep -oP 'server_name\s+\K[^;]+' "${NGINX_DIR}/nginx.conf" 2>/dev/null | grep -v '^_$' | head -1 || true)"
-    fi
-    [[ -z "${DOMAIN}" ]] && error "Не смог определить домен. Передай явно: update <domain>"
-    write_site "${DOMAIN}"
+    section "UPDATE: обновление сайта (все домены)"
+    [[ -d "${NGINX_DIR}" ]] || error "ss-fast не установлен"
+    write_html
+    write_shared_nginx
     nginx_reload
-    echo -e "\n${GREEN}Сайт обновлён для ${DOMAIN}${NC}\n"
+    echo -e "\n${GREEN}Сайт обновлён для всех доменов ноды${NC}\n"
     exit 0
 fi
 
 # =============================================================================
 #  INSTALL
 # =============================================================================
-[[ -z "${DOMAIN}" ]] && error "Usage: [CF_Token=.. CF_Account_ID=..|REGRU_USER=.. REGRU_PASS=..] ACME_EMAIL=.. bash install.sh <domain>"
+[[ -z "${DOMAIN}" ]] && error "Usage: [CF_Token=..|CF_Key=..+CF_Email=..|REGRU_USER=..+REGRU_PASS=..] ACME_EMAIL=.. bash install.sh <domain>"
 [[ -z "${EMAIL}"  ]] && error "Не задан ACME_EMAIL"
 
 REGRU_USER="${REGRU_USER:-${REGRU_API_Username:-}}"
 REGRU_PASS="${REGRU_PASS:-${REGRU_API_Password:-}}"
-
 PROVIDER="${DNS_PROVIDER:-}"
 if [[ -z "${PROVIDER}" ]]; then
     if   [[ -n "${CF_Token:-}" || ( -n "${CF_Key:-}" && -n "${CF_Email:-}" ) ]]; then PROVIDER="cf"
     elif [[ -n "${REGRU_USER}" && -n "${REGRU_PASS}" ]];                          then PROVIDER="regru"
-    else error "Нет кред DNS. Дай CF_Key+CF_Email, или CF_Token+CF_Account_ID, или REGRU_USER+REGRU_PASS"; fi
+    else error "Нет кред DNS. CF_Token(+CF_Account_ID) / CF_Key+CF_Email / REGRU_USER+REGRU_PASS"; fi
 fi
 case "${PROVIDER}" in
     cf)
-        # Cloudflare, любой из рабочих паттернов acme.sh dns_cf:
-        #   CF_Token                       — токен с Zone.Zone:Read+Zone.DNS:Edit по всем зонам (acme сам найдёт zone/account)
-        #   CF_Token + CF_Account_ID       — если токен так ограничен
-        #   CF_Token + CF_Zone_ID (+acc)   — токен на одну зону
-        #   CF_Key + CF_Email              — Global API Key ("через email")
         if   [[ -n "${CF_Token:-}" ]]; then
             CF_MODE="token"
-            if [[ -z "${CF_Account_ID:-}" && -z "${CF_Zone_ID:-}" ]]; then
-                warn "CF_Token без CF_Account_ID/CF_Zone_ID: сработает, если у токена Zone.Zone:Read по всем зонам (acme.sh сам определит account/zone). Если токен ограничен одной зоной — добавь CF_Account_ID."
-            fi
+            [[ -z "${CF_Account_ID:-}" && -z "${CF_Zone_ID:-}" ]] && \
+                warn "CF_Token без CF_Account_ID: сработает только если у токена Zone.Zone:Read по всем зонам"
             info "DNS: Cloudflare (API Token)"
         elif [[ -n "${CF_Key:-}" && -n "${CF_Email:-}" ]]; then
             CF_MODE="key"; info "DNS: Cloudflare (Global API Key + Email)"
-        else
-            error "cf: дай CF_Token (можно +CF_Account_ID), либо CF_Key+CF_Email"
-        fi
+        else error "cf: нужен CF_Token или CF_Key+CF_Email"; fi
         DNS_HOOK="dns_cf" ;;
     regru)
-        [[ -z "${REGRU_USER}" || -z "${REGRU_PASS}" ]] && error "PROVIDER=regru, но REGRU_USER/PASS пусты"
+        [[ -z "${REGRU_USER}" || -z "${REGRU_PASS}" ]] && error "regru: пусты REGRU_USER/PASS"
         DNS_HOOK="dns_regru"; info "DNS: reg.ru (dns_regru)" ;;
     *) error "Неизвестный DNS_PROVIDER='${PROVIDER}'" ;;
 esac
 
-section "1. Проверка remnanode"
+section "1. remnanode: маунты"
 COMPOSE_FILE="${REMNANODE_DIR}/docker-compose.yml"
 [[ ! -f "${COMPOSE_FILE}" ]] && error "Нет ${COMPOSE_FILE} — remnanode не установлен"
 REMNA_RECREATE=0
-# нужны два маунта: /dev/shm (сокет Reality) и /opt/nginx (cert для Hysteria2)
 for M in "/dev/shm:/dev/shm:rw" "/opt/nginx:/opt/nginx:ro"; do
     SRC="${M%%:*}"
-    if grep -q "${SRC}:" "${COMPOSE_FILE}"; then
-        info "${SRC} уже проброшен в remnanode"
+    if grep -q "${SRC}:" "${COMPOSE_FILE}"; then info "${SRC} уже проброшен"
     else
-        warn "Пробрасываю ${SRC} в remnanode"
+        warn "Пробрасываю ${SRC}"
         python3 - "${COMPOSE_FILE}" "${M}" <<'PYEOF'
 import re, sys
-p, mnt = sys.argv[1], sys.argv[2]
-c = open(p).read()
-src = mnt.split(":")[0]
-if re.search(r'(^|\s)-\s*'+re.escape(src)+r':', c):
-    sys.exit(0)
+p, mnt = sys.argv[1], sys.argv[2]; c=open(p).read(); src=mnt.split(":")[0]
+if re.search(r'(^|\s)-\s*'+re.escape(src)+r':', c): sys.exit(0)
 out=[]; done=False
 for ln in c.splitlines(keepends=True):
     out.append(ln)
     if not done and re.match(r'^(\s+)volumes:\s*$', ln):
-        ind=re.match(r'^(\s+)', ln).group(1)
-        out.append(ind+"  - "+mnt+"\n"); done=True
+        ind=re.match(r'^(\s+)', ln).group(1); out.append(ind+"  - "+mnt+"\n"); done=True
 open(p,"w").writelines(out); print("patched" if done else "no-volumes")
 PYEOF
         REMNA_RECREATE=1
@@ -941,14 +943,10 @@ done
 
 section "2. Зависимости"
 PKGS=()
-for pkg in curl socat wget python3 cron openssl; do
-    dpkg -s "$pkg" &>/dev/null || PKGS+=("$pkg")
-done
-if [[ ${#PKGS[@]} -gt 0 ]]; then
-    info "Ставлю: ${PKGS[*]}"; apt-get update -qq; apt-get install -y -qq "${PKGS[@]}"
-fi
+for pkg in curl socat wget python3 cron openssl; do dpkg -s "$pkg" &>/dev/null || PKGS+=("$pkg"); done
+if [[ ${#PKGS[@]} -gt 0 ]]; then info "Ставлю: ${PKGS[*]}"; apt-get update -qq; apt-get install -y -qq "${PKGS[@]}"; fi
 if ! grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null; then
-    echo "net.core.default_qdisc = fq"           >> /etc/sysctl.conf
+    echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
     echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
     sysctl -p >/dev/null; info "BBR включён"
 fi
@@ -956,66 +954,60 @@ fi
 section "3. Проверка DNS"
 SERVER_IP=$(curl -s --max-time 5 https://api.ipify.org || curl -s --max-time 5 https://ifconfig.me || true)
 mapfile -t DNS_IPS < <(getent hosts "${DOMAIN}" | awk '{print $1}' || true)
-if [[ ${#DNS_IPS[@]} -eq 0 ]]; then
-    warn "${DOMAIN} не резолвится. dns-01 не требует A-записи, но SNI-клиентам она нужна."
+if [[ ${#DNS_IPS[@]} -eq 0 ]]; then warn "${DOMAIN} не резолвится (для dns-01 неважно, для SNI/Reality — важно)"
 else
     info "A-записи ${DOMAIN}: ${DNS_IPS[*]}"
     printf '%s\n' "${DNS_IPS[@]}" | grep -qx "${SERVER_IP}" \
         && info "DNS указывает на этот сервер (${SERVER_IP})" \
-        || warn "IP сервера (${SERVER_IP}) не среди A-записей"
+        || warn "IP сервера (${SERVER_IP}) не среди A-записей — для Reality serverName это может быть проблемой"
 fi
 
-section "4. Сайт /opt/nginx"
-mkdir -p "${WEBROOT}"
-write_site "${DOMAIN}"
+section "4. Сайт + конфиги (мультидомен)"
+mkdir -p "${WEBROOT}" "${NGINX_DIR}/sites"
+migrate_old_layout
+write_html
+write_shared_nginx
+write_domain_conf "${DOMAIN}"
+info "sites/: $(ls -1 ${NGINX_DIR}/sites/*.conf 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 
 section "5. acme.sh"
-if [[ ! -f "${ACME_HOME}/acme.sh" ]]; then
-    info "Ставлю acme.sh"; curl -fsSL https://get.acme.sh | sh -s email="${EMAIL}"
-fi
+if [[ ! -f "${ACME_HOME}/acme.sh" ]]; then info "Ставлю acme.sh"; curl -fsSL https://get.acme.sh | sh -s email="${EMAIL}"; fi
 ACME="${ACME_HOME}/acme.sh"
 [[ ! -f "${ACME}" ]] && error "acme.sh не найден"
 export PATH="${ACME_HOME}:${PATH}"
 
-section "6. Сертификат (dns-01, ${PROVIDER})"
+section "6. Сертификат ${DOMAIN} (dns-01, ${PROVIDER})"
+CERTF="${NGINX_DIR}/${DOMAIN}-fullchain.pem"
+KEYF="${NGINX_DIR}/${DOMAIN}-privkey.key"
 SKIP_CERT=0
-if [[ -f "${NGINX_DIR}/fullchain.pem" ]]; then
-    EXP=$(openssl x509 -enddate -noout -in "${NGINX_DIR}/fullchain.pem" 2>/dev/null | cut -d= -f2 || true)
-    if [[ -n "$EXP" ]]; then
-        DLEFT=$(( ( $(date -d "${EXP}" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
-        if [[ $DLEFT -gt 30 ]]; then info "Cert валиден ещё ${DLEFT} дн — пропускаю"; SKIP_CERT=1
-        else warn "Cert истекает через ${DLEFT} дн — перевыпуск"; fi
-    fi
+if [[ -f "${CERTF}" ]]; then
+    SAN=$(openssl x509 -in "${CERTF}" -noout -ext subjectAltName 2>/dev/null || true)
+    if grep -Eq "DNS:${DOMAIN}(,|$| )" <<<"${SAN}"; then
+        EXP=$(openssl x509 -enddate -noout -in "${CERTF}" 2>/dev/null | cut -d= -f2 || true)
+        if [[ -n "$EXP" ]]; then
+            DLEFT=$(( ( $(date -d "${EXP}" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+            [[ $DLEFT -gt 30 ]] && { info "Cert ${DOMAIN} валиден ещё ${DLEFT} дн — пропускаю"; SKIP_CERT=1; } \
+                                || warn "Cert ${DOMAIN} истекает через ${DLEFT} дн — перевыпуск"
+        fi
+    else warn "Файл ${DOMAIN}-fullchain.pem не покрывает ${DOMAIN} — перевыпуск"; fi
 fi
 if [[ $SKIP_CERT -eq 0 ]]; then
     "${ACME}" --set-default-ca --server letsencrypt
     if [[ "${PROVIDER}" == "cf" ]]; then
-        if [[ "${CF_MODE}" == "key" ]]; then
-            export CF_Key CF_Email
-        else
-            export CF_Token
-            [[ -n "${CF_Email:-}"      ]] && export CF_Email
-            [[ -n "${CF_Account_ID:-}" ]] && export CF_Account_ID
-            [[ -n "${CF_Zone_ID:-}"    ]] && export CF_Zone_ID
-        fi
-    else
-        export REGRU_API_Username="${REGRU_USER}"
-        export REGRU_API_Password="${REGRU_PASS}"
-    fi
+        if [[ "${CF_MODE}" == "key" ]]; then export CF_Key CF_Email
+        else export CF_Token; [[ -n "${CF_Email:-}" ]] && export CF_Email
+             [[ -n "${CF_Account_ID:-}" ]] && export CF_Account_ID
+             [[ -n "${CF_Zone_ID:-}" ]] && export CF_Zone_ID; fi
+    else export REGRU_API_Username="${REGRU_USER}"; export REGRU_API_Password="${REGRU_PASS}"; fi
     "${ACME}" --issue --dns "${DNS_HOOK}" -d "${DOMAIN}" --keylength ec-256 \
-        --key-file "${NGINX_DIR}/privkey.key" --fullchain-file "${NGINX_DIR}/fullchain.pem" --force \
+        --key-file "${KEYF}" --fullchain-file "${CERTF}" --force \
         || error "Выпуск cert не удался. Проверь креды ${PROVIDER} и DNS."
     "${ACME}" --install-cert -d "${DOMAIN}" --ecc \
-        --key-file "${NGINX_DIR}/privkey.key" --fullchain-file "${NGINX_DIR}/fullchain.pem" \
+        --key-file "${KEYF}" --fullchain-file "${CERTF}" \
         --reloadcmd "docker exec ${CONTAINER} nginx -s reload 2>/dev/null || true" \
-        || warn "install-cert вернул ошибку на reload — не критично, контейнер стартует с cert в секции 9"
-    info "Cert → ${NGINX_DIR}/fullchain.pem"
+        || warn "install-cert reload — не критично, контейнер стартует ниже"
+    info "Cert → ${CERTF}"
 fi
-
-# Hysteria2/панель читают cert с диска по имени <domain>-fullchain.pem — даём алиасы
-ln -sf "${NGINX_DIR}/fullchain.pem" "${NGINX_DIR}/${DOMAIN}-fullchain.pem"
-ln -sf "${NGINX_DIR}/privkey.key"   "${NGINX_DIR}/${DOMAIN}-privkey.key"
-info "cert-алиасы: ${DOMAIN}-fullchain.pem / ${DOMAIN}-privkey.key"
 
 section "7. docker-compose.yml"
 cat > "${NGINX_DIR}/docker-compose.yml" <<DCEOF
@@ -1031,9 +1023,7 @@ services:
         hard: 1048576
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./html:/var/www/html:ro
-      - ./fullchain.pem:/etc/nginx/ssl/fullchain.pem:ro
-      - ./privkey.key:/etc/nginx/ssl/privkey.key:ro
+      - /opt/nginx:/opt/nginx:ro
       - /dev/shm:/dev/shm:rw
     command: sh -c 'rm -f /dev/shm/nginx.sock && exec nginx -g "daemon off;"'
     network_mode: host
@@ -1045,42 +1035,40 @@ services:
 DCEOF
 
 section "8. UFW"
-ufw allow 22/tcp  comment 'SSH'   >/dev/null 2>&1 || true
+ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1 || true
 ufw allow 443/tcp comment 'HTTPS' >/dev/null 2>&1 || true
-ufw --force enable >/dev/null 2>&1 || true
-ufw reload         >/dev/null 2>&1 || true
+ufw --force enable >/dev/null 2>&1 || true; ufw reload >/dev/null 2>&1 || true
 info "UFW: 22, 443"
 
-section "9. Запуск"
+section "9. Запуск nginx"
 docker stop "${CONTAINER}" 2>/dev/null || true
-docker rm   "${CONTAINER}" 2>/dev/null || true
+docker rm "${CONTAINER}" 2>/dev/null || true
 cd "${NGINX_DIR}"
 docker compose pull -q "${CONTAINER}" || true
 docker compose up -d --no-deps "${CONTAINER}"
 sleep 2
 [[ -S "${NGINX_SOCK}" ]] && info "Socket: ${NGINX_SOCK}" || warn "Socket ещё не появился"
+docker exec "${CONTAINER}" nginx -t >/dev/null 2>&1 && info "nginx -t: OK (все домены в sites/ валидны)" || warn "nginx -t дал ошибку — docker exec ${CONTAINER} nginx -t"
 
-section "10. remnanode (маунты + перечитать конфиг xray)"
-# теперь на диске есть cert, cert-алиасы и сокет — поднимаем remnanode с маунтами
+section "10. remnanode: применить маунты / перечитать xray"
 if [[ ${REMNA_RECREATE} -eq 1 ]]; then
     docker compose -f "${COMPOSE_FILE}" up -d --force-recreate remnanode || warn "не смог пересоздать remnanode"
-    info "remnanode пересоздан с маунтами /dev/shm и /opt/nginx"
+    info "remnanode пересоздан с маунтами"
 else
     docker compose -f "${COMPOSE_FILE}" restart remnanode >/dev/null 2>&1 || warn "не смог перезапустить remnanode"
-    info "remnanode перезапущен — xray перечитал конфиг"
+    info "remnanode перезапущен"
 fi
 sleep 2
-if docker logs remnanode --tail=30 2>&1 | grep -qi "failed to load config\|no such file"; then
-    warn "xray всё ещё ругается — проверь: docker logs remnanode --tail=40"
-else
-    info "xray стартовал без ошибок cert"
-fi
+docker logs remnanode --tail=30 2>&1 | grep -qi "failed to load config\|no such file" \
+    && warn "xray ругается — docker logs remnanode --tail=40" \
+    || info "xray стартовал без ошибок cert"
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║        Self-steal установлен успешно!            ║${NC}"
+echo -e "${GREEN}║     Домен ${DOMAIN} добавлен на ноду${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
-echo -e "  ${YELLOW}В xray (remnanode):${NC}"
+echo -e "  ${YELLOW}В xray (remnanode) для этого домена:${NC}"
 echo -e "  ${CYAN}\"dest\": \"/dev/shm/nginx.sock\"  \"xver\": 1  \"serverNames\": [\"${DOMAIN}\"]${NC}"
-echo -e "  ${GRAY}Обновить сайт:  bash install.sh update${NC}"
+echo -e "  ${GRAY}Домены ноды: $(ls -1 ${NGINX_DIR}/sites/*.conf 2>/dev/null | xargs -n1 basename | sed 's/.conf//' | tr '\n' ' ')${NC}"
+echo -e "  ${GRAY}Обновить сайт (все домены): bash install.sh update${NC}"
 echo ""
