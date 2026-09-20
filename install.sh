@@ -999,7 +999,8 @@ if [[ $SKIP_CERT -eq 0 ]]; then
         || error "Выпуск cert не удался. Проверь креды ${PROVIDER} и DNS."
     "${ACME}" --install-cert -d "${DOMAIN}" --ecc \
         --key-file "${NGINX_DIR}/privkey.key" --fullchain-file "${NGINX_DIR}/fullchain.pem" \
-        --reloadcmd "docker exec ${CONTAINER} nginx -s reload 2>/dev/null || docker compose -f ${NGINX_DIR}/docker-compose.yml restart"
+        --reloadcmd "docker exec ${CONTAINER} nginx -s reload 2>/dev/null || true" \
+        || warn "install-cert вернул ошибку на reload — не критично, контейнер стартует с cert в секции 9"
     info "Cert → ${NGINX_DIR}/fullchain.pem"
 fi
 
