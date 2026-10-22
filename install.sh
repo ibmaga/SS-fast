@@ -1390,6 +1390,14 @@ nginx_reload() {
 if [[ "${MODE}" == "update" ]]; then
     section "UPDATE: обновление сайта (все домены)"
     [[ -d "${NGINX_DIR}" ]] || error "ss-fast не установлен"
+    if ! compgen -G "${NGINX_DIR}/sites/*.conf" >/dev/null; then
+        # Старая одно-доменная раскладка (nginx.conf с единственным server{}, без sites/): общий конфиг не перезаписываем —
+        # иначе пропадёт server-блок домена. Меняем только файлы сайта (каталог html примонтирован в контейнер).
+        warn "Старая раскладка (нет ${NGINX_DIR}/sites/*.conf): обновляю только файлы сайта, nginx.conf не трогаю"
+        write_html
+        echo -e "\n${GREEN}Файлы сайта обновлены (nginx.conf без изменений)${NC}\n"
+        exit 0
+    fi
     write_html
     write_shared_nginx
     nginx_reload
