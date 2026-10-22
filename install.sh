@@ -9,8 +9,13 @@
 #    CF (email): CF_Key=.. CF_Email=..           ACME_EMAIL=you@mail bash install.sh <domain>
 #    reg.ru:     REGRU_USER=.. REGRU_PASS=..      ACME_EMAIL=you@mail bash install.sh <domain>
 #
+#  ВЫБОР САЙТА:
+#    -z, --zro   Northvale Cloud (по умолчанию; SS_SITE=zro)
+#    -m, --mona  Tarnex          (SS_SITE=mona)
+#    Флаг можно ставить где угодно:  bash install.sh -m <domain>   |   bash install.sh update -m
+#
 #  ОБНОВЛЕНИЕ САЙТА (для ВСЕХ доменов ноды, без cert/compose):
-#    bash install.sh update
+#    bash install.sh update [-z|-m]
 # =============================================================================
 set -euo pipefail
 
@@ -29,12 +34,23 @@ NGINX_SOCK="/dev/shm/nginx.sock"
 CONTAINER="remnanode-nginx"
 
 MODE="install"
+SITE="${SS_SITE:-zro}"      # какой встроенный сайт ставить: zro (Northvale Cloud, по умолчанию) или mona (Tarnex)
+_POS=()
+for _a in "$@"; do
+    case "${_a}" in
+        -z|--zro)  SITE="zro" ;;
+        -m|--mona) SITE="mona" ;;
+        *)         _POS+=("${_a}") ;;
+    esac
+done
+set -- ${_POS[@]+"${_POS[@]}"}
 if [[ "${1:-}" == "update" ]]; then MODE="update"; shift; fi
+case "${SITE}" in zro|mona) ;; *) echo "Неизвестный сайт '${SITE}': используйте -z (zro) или -m (mona)" >&2; exit 1 ;; esac
 DOMAIN="${1:-}"
 EMAIL="${ACME_EMAIL:-${2:-}}"
 [[ $EUID -ne 0 ]] && error "Запусти от root"
 
-write_html() {
+write_html_zro() {
     mkdir -p "${WEBROOT}/assets/v1"
 cat > "${WEBROOT}/404.html" <<'EOF_404_HTML'
 <!DOCTYPE html><html lang="en"><head>
@@ -772,6 +788,501 @@ EOF_TERMS_HTML
 
 }
 
+# >>> SITE-mona BEGIN (сгенерировано tools/embed-site.py, не править руками — правьте sites/mona/)
+write_html_mona() {
+    mkdir -p "${WEBROOT}" "${WEBROOT}/assets/t1"
+cat > "${WEBROOT}/404.html" <<'EOF_404_HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Page not found — Tarnex</title>
+<meta name="description" content="The page you are looking for does not exist.">
+<meta name="theme-color" content="#101214">
+<meta property="og:title" content="Page not found — Tarnex">
+<meta property="og:description" content="The page you are looking for does not exist.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/t1/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap nav">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>Tarnex</a>
+  <nav class="links"><a href="/">Home</a><a href="/how-it-works.html">How it works</a><a href="/pricing.html">Pricing</a><a href="/help.html">Help</a><a href="/login.html">Sign in</a></nav>
+  <a class="btn pri" href="/login.html">Send a file</a>
+  <button class="burger" aria-label="Menu">&#9776;</button>
+</div></header>
+<main><div class="wrap err">
+<div class="n">404</div>
+<h1 style="font-size:30px">This link is gone</h1>
+<p class="lead" style="margin-bottom:26px">It may have expired, been revoked or never existed.</p>
+<a class="btn pri lg" href="/">Back to home</a>
+</div></main>
+<footer><div class="wrap">
+  <div>&copy; <span id="yr">2026</span> Tarnex. Send it once.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/help.html">Help</a></div>
+</div></footer>
+<script src="/assets/t1/app.js" defer></script>
+</body>
+</html>
+EOF_404_HTML
+base64 -d > "${WEBROOT}/apple-touch-icon.png" <<'EOF_APPLE_TOUCH_ICON_PNG'
+iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAYAAAA9zQYyAAACe0lEQVR42u3TwQ2DMBQFQV9oIMfU
+Ran0B6KDEIXIWsbSNvD+eIzQ27d11/WGByr4HsCAQyy4IRbcIAtskPVE2I6qDGyHVAK14ykD28GU
+QO1IysB2GGVQO4gyqB1CGdQOoAxqwyuD2uDKoDa0MqgNrBRq4yoD2rDKoDaoUqiNqQxoQyqD2oBK
+oTaeMqANpxRqoykD2mBKoTaWMqANpRRqIwloaUbQBlIKtXEEtDQjaMMohdooAloCWroZtEGUQm0M
+AS0BLQEtAS2gJaAloCWgpQ9AG0Ip1EYQ0BLQ9/d+LfoyoIEGGmiggQYaaKCBFtBAAw000EADDTTQ
+QAMNNNACGmiggQYaaKCBBhpooIEGWkADDTTQQAMNNNBAAw000EALaKCBBhpooIH2iWq4gAYaaKCB
+FtBAAy2ggQYaaKCBtivQQAtooIEW0EADDTTQQAtooIE2BNBAC2iggQYaaKAFNNBAC2iggQYaaKCB
+BhpoAQ000AIaaKCBBhpooIEGWkADDbSABhpooIEGGmiggRbQQAMtoIEGGmiggQYaaKAFNNBAC2ig
+gQYaaKCBBhpoAQ000AIaaKCBBhpoAQ20gAYaaAENNNBAAw20gAYaaAEdAX0+QwCdwQw00EALaKCB
+BhpooAW0gDaIgJaAloCWLoCGWinMQAtoCWjpT6ChVgoz0AJamhk01EphBlpASzODhlopzEArBxpq
+pTADrRxoqJXCDLRyoKFWCjPUymEGWjnQUCuFGWrlMAOtHGiolcIMtXKYoVYOM9TKYYZaOcxQK4cZ
+auUwQ60cZrCVgwy1kpjBVg4y1EpiBluj/hwZZLAFMtyCGG5BDDjAHvig/vwdoTM7tM97i5AAAAAA
+SUVORK5CYII=
+EOF_APPLE_TOUCH_ICON_PNG
+cat > "${WEBROOT}/assets/t1/app.js" <<'EOF_ASSETS_T1_APP_JS'
+(function(){
+  var b=document.querySelector('.burger'),l=document.querySelector('.links');
+  if(b&&l)b.addEventListener('click',function(){l.classList.toggle('open')});
+  var y=document.getElementById('yr');if(y)y.textContent=new Date().getFullYear();
+  var drop=document.getElementById('drop'),inp=document.getElementById('file'),list=document.getElementById('picked'),note=document.getElementById('note');
+  if(drop&&inp){
+    var size=function(n){return n<1048576?(n/1024).toFixed(0)+' KB':(n/1048576).toFixed(1)+' MB'};
+    var show=function(files){
+      list.innerHTML='';
+      Array.prototype.slice.call(files,0,8).forEach(function(f){
+        var li=document.createElement('li'),a=document.createElement('span'),s=document.createElement('span');
+        a.textContent=f.name;s.textContent=size(f.size);li.appendChild(a);li.appendChild(s);list.appendChild(li);
+      });
+      note.textContent=files.length?'Sign in to create your private link.':'';
+    };
+    ['dragenter','dragover'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.add('over')})});
+    ['dragleave','drop'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.remove('over')})});
+    drop.addEventListener('drop',function(ev){show(ev.dataTransfer.files)});
+    inp.addEventListener('change',function(){show(inp.files)});
+  }
+  var f=document.getElementById('login');
+  if(f)f.addEventListener('submit',function(ev){ev.preventDefault();document.getElementById('msg').textContent='Incorrect email or password.'});
+})();
+EOF_ASSETS_T1_APP_JS
+cat > "${WEBROOT}/assets/t1/style.css" <<'EOF_ASSETS_T1_STYLE_CSS'
+:root{--bg:#101214;--bg2:#15181b;--card:#1b1f23;--line:#2a2f35;--tx:#e9e7e2;--mut:#9aa0a6;--acc:#ffb454;--acc2:#5ad1c4;--r:14px}
+*{box-sizing:border-box}html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+.wrap{max-width:1040px;margin:0 auto;padding:0 22px}
+header.top{position:sticky;top:0;z-index:20;background:rgba(16,18,20,.88);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.nav{display:flex;align-items:center;justify-content:space-between;height:64px;gap:18px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:20px;color:var(--tx);letter-spacing:.2px}
+.brand:hover{text-decoration:none}.brand svg{width:28px;height:28px}
+.links{display:flex;gap:22px}.links a{color:var(--mut);font-size:15px}.links a:hover,.links a.on{color:var(--tx);text-decoration:none}
+.btn{display:inline-block;border:1px solid var(--line);color:var(--tx);padding:9px 18px;border-radius:999px;font-weight:600;font-size:15px;background:transparent;cursor:pointer;font-family:inherit}
+.btn:hover{border-color:#444b53;text-decoration:none}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#1a1205}.btn.pri:hover{filter:brightness(1.07)}
+.btn.lg{padding:13px 26px;font-size:16px}
+.burger{display:none;background:none;border:0;color:var(--tx);font-size:24px;cursor:pointer}
+.hero{padding:76px 0 40px;text-align:center}
+.tag{display:inline-block;color:var(--acc2);border:1px solid #23413f;background:#112220;padding:4px 14px;border-radius:999px;font-size:13px;margin-bottom:22px}
+h1{font-size:clamp(34px,6vw,58px);line-height:1.08;margin:0 0 18px;letter-spacing:-.8px}
+h1 em{font-style:normal;color:var(--acc)}
+.lead{color:var(--mut);font-size:19px;max-width:640px;margin:0 auto 34px}
+.drop{max-width:640px;margin:0 auto;background:var(--card);border:1.5px dashed #3a4148;border-radius:20px;padding:42px 26px;transition:.15s}
+.drop.over{border-color:var(--acc);background:#201d17}
+.drop strong{display:block;font-size:20px;margin-bottom:6px}.drop p{margin:0 0 20px;color:var(--mut);font-size:15px}
+.drop input{display:none}
+#picked{list-style:none;padding:0;margin:18px 0 0;text-align:left;font-size:14px;color:var(--mut)}
+#picked li{display:flex;justify-content:space-between;padding:8px 12px;border:1px solid var(--line);border-radius:10px;margin-top:8px;background:var(--bg2)}
+#note{margin-top:16px;font-size:14px;color:var(--acc2);min-height:20px}
+.opts{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:22px;color:var(--mut);font-size:13px}
+.opts span{border:1px solid var(--line);padding:4px 12px;border-radius:999px}
+section.blk{padding:64px 0;border-top:1px solid var(--line)}
+section.blk h2{font-size:30px;margin:0 0 10px;letter-spacing:-.4px}.sub{color:var(--mut);margin:0 0 34px;max-width:620px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:24px}
+.card h3{margin:0 0 8px;font-size:18px}.card p{margin:0;color:var(--mut);font-size:15px}
+.ico{width:38px;height:38px;border-radius:10px;background:#2a2314;color:var(--acc);display:grid;place-items:center;font-weight:700;margin-bottom:14px}
+.steps{counter-reset:s;display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.steps .card{position:relative;padding-top:46px}
+.steps .card:before{counter-increment:s;content:counter(s);position:absolute;top:16px;left:22px;color:var(--acc);font-weight:700;font-size:20px}
+.price{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.price .card.hot{border-color:var(--acc)}.price .amt{font-size:38px;font-weight:700;margin:10px 0}
+.price .amt small{font-size:15px;color:var(--mut);font-weight:400}
+.price ul{list-style:none;padding:0;margin:14px 0 22px;color:var(--mut);font-size:15px}.price li{padding:5px 0}.price li:before{content:"✓ ";color:var(--acc2)}
+.faq details{border:1px solid var(--line);border-radius:12px;background:var(--card);padding:14px 18px;margin-bottom:10px}
+.faq summary{cursor:pointer;font-weight:600}.faq p{color:var(--mut);margin:10px 0 2px}
+.form{max-width:400px;margin:70px auto;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:30px}
+.form h1{font-size:28px;margin:0 0 6px}.form label{display:block;margin:16px 0 6px;color:var(--mut);font-size:14px}
+.form input{width:100%;background:var(--bg2);border:1px solid var(--line);border-radius:10px;color:var(--tx);padding:11px 13px;font-size:15px;font-family:inherit}
+.form input:focus{outline:none;border-color:var(--acc)}.form .btn{width:100%;margin-top:22px}
+.msg{margin-top:14px;font-size:14px;color:#ff8f7a;min-height:20px}
+.doc{max-width:760px;padding:56px 0}.doc h1{font-size:36px}.doc h2{margin-top:34px;font-size:21px}.doc p,.doc li{color:#c9c7c1}
+.err{text-align:center;padding:110px 0}.err .n{font-size:96px;font-weight:800;color:var(--acc);line-height:1}
+footer{border-top:1px solid var(--line);padding:30px 0;color:var(--mut);font-size:14px;margin-top:20px}
+footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}footer a{color:var(--mut);margin-left:18px}
+@media(max-width:820px){.grid,.steps,.price{grid-template-columns:1fr}.links{display:none;position:absolute;top:64px;left:0;right:0;background:var(--bg2);flex-direction:column;padding:16px 22px;border-bottom:1px solid var(--line)}.links.open{display:flex}.burger{display:block}.nav .btn.pri{display:none}}
+EOF_ASSETS_T1_STYLE_CSS
+base64 -d > "${WEBROOT}/favicon.ico" <<'EOF_FAVICON_ICO'
+AAABAAEAICAAAAEAIACqAAAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p69AAA
+AHFJREFUeNrt17sJACAMBNA0LmDpXI7qftrZKBKi+SAnpBPuFYI5IsbprXbJkPRIA5+AtMJZCO3w
+I8IqfIuwDl8QALgCvMIngnOp5CQeAP4AcGCqjxAAAAD4G3DzI94CsJDEAbiv5SGKSYhqFqKcWtfz
+ASPaLNPEHsBPAAAAAElFTkSuQmCC
+EOF_FAVICON_ICO
+cat > "${WEBROOT}/favicon.svg" <<'EOF_FAVICON_SVG'
+<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>
+EOF_FAVICON_SVG
+cat > "${WEBROOT}/help.html" <<'EOF_HELP_HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Help — Tarnex</title>
+<meta name="description" content="Answers to common questions about links, expiry and downloads.">
+<meta name="theme-color" content="#101214">
+<meta property="og:title" content="Help — Tarnex">
+<meta property="og:description" content="Answers to common questions about links, expiry and downloads.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/t1/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap nav">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>Tarnex</a>
+  <nav class="links"><a href="/">Home</a><a href="/how-it-works.html">How it works</a><a href="/pricing.html">Pricing</a><a href="/help.html" class=on>Help</a><a href="/login.html">Sign in</a></nav>
+  <a class="btn pri" href="/login.html">Send a file</a>
+  <button class="burger" aria-label="Menu">&#9776;</button>
+</div></header>
+<main><div class="wrap doc faq">
+<h1>Help</h1>
+<p class="sub">Quick answers to the things people ask most.</p>
+<details open><summary>How long does a link last?</summary><p>You choose: from one hour up to the limit of your plan. After that the link stops working and the file is deleted.</p></details>
+<details><summary>Can I cancel a link before it expires?</summary><p>Yes. Sign in, open your transfers and revoke the link. The file is removed immediately.</p></details>
+<details><summary>Do recipients need an account?</summary><p>No. They open the link and download. A passcode is only requested if you set one.</p></details>
+<details><summary>What is the maximum file size?</summary><p>2 GB on Free and 20 GB on Pro. Larger transfers can be split into several links.</p></details>
+<details><summary>A download link says it is no longer available.</summary><p>It has expired, reached its download limit or was revoked by the sender. Ask the sender for a new link.</p></details>
+</div></main>
+<footer><div class="wrap">
+  <div>&copy; <span id="yr">2026</span> Tarnex. Send it once.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/help.html">Help</a></div>
+</div></footer>
+<script src="/assets/t1/app.js" defer></script>
+</body>
+</html>
+EOF_HELP_HTML
+cat > "${WEBROOT}/how-it-works.html" <<'EOF_HOW_IT_WORKS_HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How it works — Tarnex</title>
+<meta name="description" content="Three steps: upload, set the rules, share the link.">
+<meta name="theme-color" content="#101214">
+<meta property="og:title" content="How it works — Tarnex">
+<meta property="og:description" content="Three steps: upload, set the rules, share the link.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/t1/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap nav">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>Tarnex</a>
+  <nav class="links"><a href="/">Home</a><a href="/how-it-works.html" class=on>How it works</a><a href="/pricing.html">Pricing</a><a href="/help.html">Help</a><a href="/login.html">Sign in</a></nav>
+  <a class="btn pri" href="/login.html">Send a file</a>
+  <button class="burger" aria-label="Menu">&#9776;</button>
+</div></header>
+<main><div class="wrap doc">
+<h1>How it works</h1>
+<p class="sub">Sending a file takes less time than writing the email about it.</p>
+<div class="steps">
+  <div class="card"><h3>Upload</h3><p>Drag files into the page or pick them from your device. Folders are zipped automatically.</p></div>
+  <div class="card"><h3>Set the rules</h3><p>Choose an expiry, an optional passcode and how many times the link may be opened.</p></div>
+  <div class="card"><h3>Share the link</h3><p>Send the link by any channel. You can revoke it from your dashboard at any moment.</p></div>
+</div>
+<h2>What happens to your files</h2>
+<p>Files are encrypted in transit and at rest. When a link expires or reaches its download limit, the file is removed from storage and cannot be recovered.</p>
+<h2>Recipients</h2>
+<p>Anyone with the link can download without creating an account. If you set a passcode, share it separately from the link.</p>
+</div></main>
+<footer><div class="wrap">
+  <div>&copy; <span id="yr">2026</span> Tarnex. Send it once.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/help.html">Help</a></div>
+</div></footer>
+<script src="/assets/t1/app.js" defer></script>
+</body>
+</html>
+EOF_HOW_IT_WORKS_HTML
+cat > "${WEBROOT}/index.html" <<'EOF_INDEX_HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tarnex — Send files with a link that expires</title>
+<meta name="description" content="Share large files with a private link. Set an expiry, a passcode and a download limit. No account needed for recipients.">
+<meta name="theme-color" content="#101214">
+<meta property="og:title" content="Tarnex — Send files with a link that expires">
+<meta property="og:description" content="Share large files with a private link. Set an expiry, a passcode and a download limit. No account needed for recipients.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/t1/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap nav">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>Tarnex</a>
+  <nav class="links"><a href="/" class=on>Home</a><a href="/how-it-works.html">How it works</a><a href="/pricing.html">Pricing</a><a href="/help.html">Help</a><a href="/login.html">Sign in</a></nav>
+  <a class="btn pri" href="/login.html">Send a file</a>
+  <button class="burger" aria-label="Menu">&#9776;</button>
+</div></header>
+<main>
+<section class="hero"><div class="wrap">
+  <span class="tag">Files up to 20 GB · Links that expire</span>
+  <h1>Send it once.<br><em>Gone when you say so.</em></h1>
+  <p class="lead">Drop a file, get a private link. Choose when it expires, how many times it can be opened and whether it needs a passcode. Recipients don't need an account.</p>
+  <div class="drop" id="drop">
+    <strong>Drop files here</strong>
+    <p>or choose them from your device</p>
+    <label class="btn pri lg" for="file">Choose files</label>
+    <input type="file" id="file" multiple>
+    <ul id="picked"></ul>
+    <div id="note"></div>
+    <div class="opts"><span>Expires in 24 h</span><span>1 download</span><span>Passcode optional</span></div>
+  </div>
+</div></section>
+<section class="blk"><div class="wrap">
+  <h2>Built for the one-time hand-off</h2>
+  <p class="sub">Most files only need to travel once. Tarnex is designed around that.</p>
+  <div class="grid">
+    <div class="card"><div class="ico">&#9201;</div><h3>Expiring links</h3><p>Pick an expiry from one hour to thirty days. When the time is up the link stops working and the file is deleted.</p></div>
+    <div class="card"><div class="ico">&#128273;</div><h3>Passcode &amp; limits</h3><p>Protect a link with a passcode and cap the number of downloads, so a forwarded link doesn't travel further than you intended.</p></div>
+    <div class="card"><div class="ico">&#9889;</div><h3>Fast, resumable</h3><p>Large uploads are split into chunks and resume after a dropped connection instead of starting over.</p></div>
+  </div>
+</div></section>
+</main>
+<footer><div class="wrap">
+  <div>&copy; <span id="yr">2026</span> Tarnex. Send it once.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/help.html">Help</a></div>
+</div></footer>
+<script src="/assets/t1/app.js" defer></script>
+</body>
+</html>
+EOF_INDEX_HTML
+cat > "${WEBROOT}/login.html" <<'EOF_LOGIN_HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in — Tarnex</title>
+<meta name="description" content="Sign in to manage your transfers.">
+<meta name="theme-color" content="#101214">
+<meta property="og:title" content="Sign in — Tarnex">
+<meta property="og:description" content="Sign in to manage your transfers.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/t1/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap nav">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>Tarnex</a>
+  <nav class="links"><a href="/">Home</a><a href="/how-it-works.html">How it works</a><a href="/pricing.html">Pricing</a><a href="/help.html">Help</a><a href="/login.html">Sign in</a></nav>
+  <a class="btn pri" href="/login.html">Send a file</a>
+  <button class="burger" aria-label="Menu">&#9776;</button>
+</div></header>
+<main><div class="wrap">
+<form class="form" id="login" autocomplete="on">
+  <h1>Sign in</h1>
+  <p style="color:var(--mut);margin:0">Manage your links and transfers.</p>
+  <label for="em">Email</label><input id="em" type="email" autocomplete="username" required>
+  <label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" required>
+  <button class="btn pri" type="submit">Sign in</button>
+  <div class="msg" id="msg"></div>
+</form>
+</div></main>
+<footer><div class="wrap">
+  <div>&copy; <span id="yr">2026</span> Tarnex. Send it once.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/help.html">Help</a></div>
+</div></footer>
+<script src="/assets/t1/app.js" defer></script>
+</body>
+</html>
+EOF_LOGIN_HTML
+cat > "${WEBROOT}/pricing.html" <<'EOF_PRICING_HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pricing — Tarnex</title>
+<meta name="description" content="Free for everyday sending. Pro and Team for larger files and longer links.">
+<meta name="theme-color" content="#101214">
+<meta property="og:title" content="Pricing — Tarnex">
+<meta property="og:description" content="Free for everyday sending. Pro and Team for larger files and longer links.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/t1/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap nav">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>Tarnex</a>
+  <nav class="links"><a href="/">Home</a><a href="/how-it-works.html">How it works</a><a href="/pricing.html" class=on>Pricing</a><a href="/help.html">Help</a><a href="/login.html">Sign in</a></nav>
+  <a class="btn pri" href="/login.html">Send a file</a>
+  <button class="burger" aria-label="Menu">&#9776;</button>
+</div></header>
+<main><div class="wrap doc" style="max-width:1040px">
+<h1>Simple pricing</h1>
+<p class="sub">Start free. Upgrade when you send bigger files or need links that last longer.</p>
+<div class="price">
+  <div class="card"><h3>Free</h3><div class="amt">$0</div><ul><li>Up to 2 GB per transfer</li><li>Links expire in up to 3 days</li><li>Passcode protection</li></ul><a class="btn" href="/login.html">Get started</a></div>
+  <div class="card hot"><h3>Pro</h3><div class="amt">$9<small> / month</small></div><ul><li>Up to 20 GB per transfer</li><li>Links expire in up to 30 days</li><li>Download limits &amp; revoke</li><li>Transfer history</li></ul><a class="btn pri" href="/login.html">Choose Pro</a></div>
+  <div class="card"><h3>Team</h3><div class="amt">$24<small> / user / month</small></div><ul><li>Shared team library</li><li>Branded download page</li><li>Admin controls</li></ul><a class="btn" href="/login.html">Contact sales</a></div>
+</div>
+</div></main>
+<footer><div class="wrap">
+  <div>&copy; <span id="yr">2026</span> Tarnex. Send it once.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/help.html">Help</a></div>
+</div></footer>
+<script src="/assets/t1/app.js" defer></script>
+</body>
+</html>
+EOF_PRICING_HTML
+cat > "${WEBROOT}/privacy.html" <<'EOF_PRIVACY_HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy — Tarnex</title>
+<meta name="description" content="How Tarnex handles your files and data.">
+<meta name="theme-color" content="#101214">
+<meta property="og:title" content="Privacy — Tarnex">
+<meta property="og:description" content="How Tarnex handles your files and data.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/t1/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap nav">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>Tarnex</a>
+  <nav class="links"><a href="/">Home</a><a href="/how-it-works.html">How it works</a><a href="/pricing.html">Pricing</a><a href="/help.html">Help</a><a href="/login.html">Sign in</a></nav>
+  <a class="btn pri" href="/login.html">Send a file</a>
+  <button class="burger" aria-label="Menu">&#9776;</button>
+</div></header>
+<main><div class="wrap doc">
+<h1>Privacy</h1>
+<p>We keep only what is needed to deliver a transfer: the file, its expiry and download settings, and basic technical logs used to prevent abuse.</p>
+<h2>Files</h2><p>Files are stored encrypted and deleted when a link expires, reaches its download limit or is revoked.</p>
+<h2>Logs</h2><p>Server logs are kept for a short period for security and reliability, then removed.</p>
+<h2>Cookies</h2><p>We use only the cookies required for signing in. We do not run third-party advertising trackers.</p>
+<h2>Questions</h2><p>Use the Help page to find answers, or sign in and contact support from your account.</p>
+</div></main>
+<footer><div class="wrap">
+  <div>&copy; <span id="yr">2026</span> Tarnex. Send it once.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/help.html">Help</a></div>
+</div></footer>
+<script src="/assets/t1/app.js" defer></script>
+</body>
+</html>
+EOF_PRIVACY_HTML
+cat > "${WEBROOT}/robots.txt" <<'EOF_ROBOTS_TXT'
+User-agent: *
+Allow: /
+EOF_ROBOTS_TXT
+cat > "${WEBROOT}/site.webmanifest" <<'EOF_SITE_WEBMANIFEST'
+{
+  "name": "Tarnex",
+  "short_name": "Tarnex",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#101214",
+  "theme_color": "#101214",
+  "icons": [{"src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png"}]
+}
+EOF_SITE_WEBMANIFEST
+cat > "${WEBROOT}/terms.html" <<'EOF_TERMS_HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms — Tarnex</title>
+<meta name="description" content="Terms of use for Tarnex.">
+<meta name="theme-color" content="#101214">
+<meta property="og:title" content="Terms — Tarnex">
+<meta property="og:description" content="Terms of use for Tarnex.">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="stylesheet" href="/assets/t1/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap nav">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="9" fill="#ffb454"/><path d="M9 10h14M16 10v13" stroke="#1a1205" stroke-width="3.4" stroke-linecap="round"/></svg>Tarnex</a>
+  <nav class="links"><a href="/">Home</a><a href="/how-it-works.html">How it works</a><a href="/pricing.html">Pricing</a><a href="/help.html">Help</a><a href="/login.html">Sign in</a></nav>
+  <a class="btn pri" href="/login.html">Send a file</a>
+  <button class="burger" aria-label="Menu">&#9776;</button>
+</div></header>
+<main><div class="wrap doc">
+<h1>Terms of use</h1>
+<p>By using Tarnex you agree to use the service lawfully and to be responsible for the files you share.</p>
+<h2>Acceptable use</h2><p>Do not upload content that is illegal, infringes the rights of others or contains malware. We may remove content and suspend accounts that break these rules.</p>
+<h2>Availability</h2><p>We work to keep the service available but do not guarantee uninterrupted access. Links and files may be removed after they expire.</p>
+<h2>Changes</h2><p>We may update these terms. Continued use of the service means you accept the updated terms.</p>
+</div></main>
+<footer><div class="wrap">
+  <div>&copy; <span id="yr">2026</span> Tarnex. Send it once.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/help.html">Help</a></div>
+</div></footer>
+<script src="/assets/t1/app.js" defer></script>
+</body>
+</html>
+EOF_TERMS_HTML
+}
+# <<< SITE-mona END
+
+# Выбор сайта (-z / -m). Перед записью удаляются файлы обоих встроенных сайтов, чтобы при смене сайта на ноде не оставалось страниц прежнего.
+site_clean() {
+    local f
+    for f in assets 404.html apple-touch-icon.png docs.html favicon.ico favicon.svg features.html index.html login.html \
+             pricing.html privacy.html robots.txt site.webmanifest sitemap.xml terms.html how-it-works.html help.html; do
+        rm -rf "${WEBROOT:?}/${f}"
+    done
+}
+
+write_html() {
+    site_clean
+    case "${SITE}" in
+        mona) write_html_mona ;;
+        *)    write_html_zro ;;
+    esac
+    info "Сайт: ${SITE}"
+}
+
 write_shared_nginx() {
 cat > "${NGINX_DIR}/nginx.conf" <<'EOF_NGINX_SHARED'
 server_names_hash_bucket_size 64;
@@ -889,7 +1400,7 @@ fi
 # =============================================================================
 #  INSTALL
 # =============================================================================
-[[ -z "${DOMAIN}" ]] && error "Usage: [CF_Token=..|CF_Key=..+CF_Email=..|REGRU_USER=..+REGRU_PASS=..] ACME_EMAIL=.. bash install.sh <domain>"
+[[ -z "${DOMAIN}" ]] && error "Usage: [CF_Token=..|CF_Key=..+CF_Email=..|REGRU_USER=..+REGRU_PASS=..] ACME_EMAIL=.. bash install.sh [-z|-m] <domain>"
 [[ -z "${EMAIL}"  ]] && error "Не задан ACME_EMAIL"
 
 REGRU_USER="${REGRU_USER:-${REGRU_API_Username:-}}"
