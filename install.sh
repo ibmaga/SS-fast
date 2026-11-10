@@ -1566,11 +1566,19 @@ else
 fi
 
 section "9. Запуск nginx"
+if [[ "${SS_SKIP_IMAGE_PULL:-0}" == "1" ]]; then
+    docker image inspect nginx:1.28 >/dev/null 2>&1 || error "SS_SKIP_IMAGE_PULL=1: локальный образ nginx:1.28 отсутствует"
+fi
 docker stop "${CONTAINER}" 2>/dev/null || true
 docker rm "${CONTAINER}" 2>/dev/null || true
 cd "${NGINX_DIR}"
-docker compose pull -q "${CONTAINER}" || true
-docker compose up -d --no-deps "${CONTAINER}"
+if [[ "${SS_SKIP_IMAGE_PULL:-0}" == "1" ]]; then
+    info "Загрузка образа пропущена (SS_SKIP_IMAGE_PULL=1)"
+    docker compose up -d --no-deps --pull never "${CONTAINER}" >/dev/null 2>&1 || error "Не удалось запустить nginx с локальным образом nginx:1.28"
+else
+    docker compose pull -q "${CONTAINER}" || true
+    docker compose up -d --no-deps "${CONTAINER}"
+fi
 sleep 2
 [[ -S "${NGINX_SOCK}" ]] && info "Socket: ${NGINX_SOCK}" || warn "Socket ещё не появился"
 docker exec "${CONTAINER}" nginx -t >/dev/null 2>&1 && info "nginx -t: OK (все домены в sites/ валидны)" || warn "nginx -t дал ошибку — docker exec ${CONTAINER} nginx -t"
