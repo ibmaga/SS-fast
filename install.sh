@@ -1464,7 +1464,9 @@ section "2. Зависимости"
 PKGS=()
 for pkg in curl socat wget python3 cron openssl; do dpkg -s "$pkg" &>/dev/null || PKGS+=("$pkg"); done
 if [[ ${#PKGS[@]} -gt 0 ]]; then info "Ставлю: ${PKGS[*]}"; apt-get update -qq; apt-get install -y -qq "${PKGS[@]}"; fi
-if ! grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null; then
+if [[ "${SS_SKIP_SYSCTL:-0}" == "1" ]]; then
+    info "Изменение sysctl пропущено (SS_SKIP_SYSCTL=1)"
+elif ! grep -q "tcp_congestion_control = bbr" /etc/sysctl.conf 2>/dev/null; then
     echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
     echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
     sysctl -p >/dev/null; info "BBR включён"
@@ -1554,33 +1556,49 @@ services:
 DCEOF
 
 section "8. UFW"
-ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1 || true
-ufw allow 443/tcp comment 'HTTPS' >/dev/null 2>&1 || true
-ufw --force enable >/dev/null 2>&1 || true; ufw reload >/dev/null 2>&1 || true
-info "UFW: 22, 443"
+if [[ "${SS_SKIP_FIREWALL:-0}" == "1" ]]; then
+    info "UFW пропущен (SS_SKIP_FIREWALL=1)"
+else
+    ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1 || true
+    ufw allow 443/tcp comment 'HTTPS' >/dev/null 2>&1 || true
+    ufw --force enable >/dev/null 2>&1 || true; ufw reload >/dev/null 2>&1 || true
+    info "UFW: 22, 443"
+fi
 
 section "9. Запуск nginx"
+if [[ "${SS_SKIP_IMAGE_PULL:-0}" == "1" ]]; then
+    docker image inspect nginx:1.28 >/dev/null 2>&1 || error "SS_SKIP_IMAGE_PULL=1: локальный образ nginx:1.28 отсутствует"
+fi
 docker stop "${CONTAINER}" 2>/dev/null || true
 docker rm "${CONTAINER}" 2>/dev/null || true
 cd "${NGINX_DIR}"
-docker compose pull -q "${CONTAINER}" || true
-docker compose up -d --no-deps "${CONTAINER}"
+if [[ "${SS_SKIP_IMAGE_PULL:-0}" == "1" ]]; then
+    info "Загрузка образа пропущена (SS_SKIP_IMAGE_PULL=1)"
+    docker compose up -d --no-deps --pull never "${CONTAINER}" >/dev/null 2>&1 || error "Не удалось запустить nginx с локальным образом nginx:1.28"
+else
+    docker compose pull -q "${CONTAINER}" || true
+    docker compose up -d --no-deps "${CONTAINER}"
+fi
 sleep 2
 [[ -S "${NGINX_SOCK}" ]] && info "Socket: ${NGINX_SOCK}" || warn "Socket ещё не появился"
 docker exec "${CONTAINER}" nginx -t >/dev/null 2>&1 && info "nginx -t: OK (все домены в sites/ валидны)" || warn "nginx -t дал ошибку — docker exec ${CONTAINER} nginx -t"
 
 section "10. remnanode: применить маунты / перечитать xray"
-if [[ ${REMNA_RECREATE} -eq 1 ]]; then
-    docker compose -f "${COMPOSE_FILE}" up -d --force-recreate remnanode || warn "не смог пересоздать remnanode"
-    info "remnanode пересоздан с маунтами"
+if [[ "${SS_SKIP_REMNA_RESTART:-0}" == "1" ]]; then
+    info "Перезапуск remnanode и проверка его логов пропущены (SS_SKIP_REMNA_RESTART=1)"
 else
-    docker compose -f "${COMPOSE_FILE}" restart remnanode >/dev/null 2>&1 || warn "не смог перезапустить remnanode"
-    info "remnanode перезапущен"
+    if [[ ${REMNA_RECREATE} -eq 1 ]]; then
+        docker compose -f "${COMPOSE_FILE}" up -d --force-recreate remnanode || warn "не смог пересоздать remnanode"
+        info "remnanode пересоздан с маунтами"
+    else
+        docker compose -f "${COMPOSE_FILE}" restart remnanode >/dev/null 2>&1 || warn "не смог перезапустить remnanode"
+        info "remnanode перезапущен"
+    fi
+    sleep 2
+    docker logs remnanode --tail=30 2>&1 | grep -qi "failed to load config\|no such file" \
+        && warn "xray ругается — docker logs remnanode --tail=40" \
+        || info "xray стартовал без ошибок cert"
 fi
-sleep 2
-docker logs remnanode --tail=30 2>&1 | grep -qi "failed to load config\|no such file" \
-    && warn "xray ругается — docker logs remnanode --tail=40" \
-    || info "xray стартовал без ошибок cert"
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
