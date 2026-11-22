@@ -17,7 +17,7 @@
 #    Флаг можно ставить где угодно:  bash install.sh -m <domain>   |   bash install.sh update -m
 #
 #  ОБНОВЛЕНИЕ САЙТА (для ВСЕХ доменов ноды, без cert/compose):
-#    bash install.sh update [-z|-m|--stillform|--apex-relay]
+#    bash install.sh update [<domain>] [-z|-m|--stillform|--apex-relay]
 # =============================================================================
 set -euo pipefail
 
@@ -31,6 +31,8 @@ section() { echo -e "\n${CYAN}━━━━━━━━━  $*  ━━━━━�
 REMNANODE_DIR="/opt/remnanode"
 NGINX_DIR="/opt/nginx"
 WEBROOT="${NGINX_DIR}/html"
+DOMAIN_WEBROOTS="${NGINX_DIR}/webroots"
+NGINX_WEBROOTS="/opt/nginx/webroots"
 ACME_HOME="/root/.acme.sh"
 NGINX_SOCK="/dev/shm/nginx.sock"
 CONTAINER="remnanode-nginx"
@@ -8444,7 +8446,7 @@ EOF_NGINX_SHARED
 }
 
 write_domain_conf() {   # $1 = domain
-    local dom="$1"
+    local dom="$1" root="$2"
     mkdir -p "${NGINX_DIR}/sites"
 cat > "${NGINX_DIR}/sites/${dom}.conf" <<'EOF_SITE_TPL'
 server {
@@ -8456,7 +8458,7 @@ server {
     ssl_certificate_key     /opt/nginx/__DOMAIN__-privkey.key;
     ssl_trusted_certificate /opt/nginx/__DOMAIN__-fullchain.pem;
 
-    root /opt/nginx/html;
+    root __WEBROOT__;
     index index.html;
 
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
@@ -8477,58 +8479,149 @@ server {
     }
 }
 EOF_SITE_TPL
-    sed -i "s/__DOMAIN__/${dom}/g" "${NGINX_DIR}/sites/${dom}.conf"
+    sed -i -e "s/__DOMAIN__/${dom}/g" -e "s|__WEBROOT__|${root}|g" "${NGINX_DIR}/sites/${dom}.conf"
+}
+
+valid_domain() {
+    local name="$1"
+    local label='[[:alnum:]]([[:alnum:]-]{0,61}[[:alnum:]])?'
+    local LC_ALL=C
+    [[ ${#name} -le 253 && "$name" =~ ^$label(\.$label)+$ ]]
+}
+
+lock_node() {
+    mkdir -p "${NGINX_DIR}"
+    exec 9>"${NGINX_DIR}/.ss-fast.lock"
+    flock -x 9
+}
+
+has_domain_layout() {
+    [[ -f "${NGINX_DIR}/nginx.conf" ]] &&
+        grep -Fq 'include /opt/nginx/sites/*.conf;' "${NGINX_DIR}/nginx.conf"
+}
+
+legacy_domain() {
+    grep -oP 'server_name\s+\K[^;]+' "${NGINX_DIR}/nginx.conf" 2>/dev/null |
+        grep -v '^_$' | head -1 || true
+}
+
+configured_domain() {
+    local requested="$1" file candidate
+    if has_domain_layout; then
+        for file in "${NGINX_DIR}"/sites/*.conf; do
+            [[ -f "$file" ]] || continue
+            candidate="${file##*/}"
+            candidate="${candidate%.conf}"
+            if [[ "${candidate,,}" == "${requested,,}" ]]; then
+                printf '%s\n' "$candidate"
+                return
+            fi
+        done
+    else
+        candidate=$(legacy_domain)
+        if [[ "${candidate,,}" == "${requested,,}" ]]; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    fi
+    printf '%s\n' "${requested,,}"
+}
+
+publish_domain_site() (
+    local dom="$1" directory release previous
+    umask 022
+    directory="${DOMAIN_WEBROOTS}/${dom}"
+    mkdir -p "$directory"
+    release=$(mktemp -d "${directory}/release.XXXXXXXX")
+    trap 'rm -rf -- "$release"' EXIT
+    WEBROOT="$release"
+    write_html
+    chmod 755 "$release"
+    previous=$(readlink "${directory}/current" || true)
+    ln -s "${release##*/}" "${release}/next"
+    mv -Tf "${release}/next" "${directory}/current"
+    trap - EXIT
+    if [[ "$previous" =~ ^release\.[a-zA-Z0-9]+$ ]]; then
+        rm -rf -- "${directory}/${previous}"
+    fi
+)
+
+update_domain_site() {
+    local dom="$1" conf target backup
+    if ! has_domain_layout; then
+        [[ "$(legacy_domain)" == "$dom" ]] || error "Домен $dom не найден"
+        write_html
+        return
+    fi
+
+    conf="${NGINX_DIR}/sites/${dom}.conf"
+    [[ -f "$conf" ]] || error "Домен $dom не найден"
+    target="${NGINX_WEBROOTS}/${dom}/current"
+
+    if grep -Fxq "    root ${target};" "$conf"; then
+        publish_domain_site "$dom"
+        return
+    fi
+
+    grep -Fxq '    root /opt/nginx/html;' "$conf" ||
+        error "Нестандартный webroot в $conf"
+    publish_domain_site "$dom"
+    backup=$(mktemp "${NGINX_DIR}/sites/.previous.XXXXXXXX")
+    cp -p "$conf" "$backup"
+    sed -i "s|^    root /opt/nginx/html;$|    root ${target};|" "$conf"
+    if ! docker exec "${CONTAINER}" nginx -t ||
+        ! docker exec "${CONTAINER}" nginx -s reload; then
+        mv -f "$backup" "$conf"
+        error "Не удалось применить конфиг $dom, восстановлен прежний root"
+    fi
+    rm -f "$backup"
 }
 
 migrate_old_layout() {
     local conf="${NGINX_DIR}/nginx.conf"
     [[ -f "$conf" ]] || return 0
-    grep -q 'include /opt/nginx/sites/' "$conf" && return 0   # уже новый формат
+    has_domain_layout && return 0
     local olddom
-    olddom=$(grep -oP 'server_name\s+\K[^;]+' "$conf" 2>/dev/null | grep -v '^_$' | head -1 || true)
+    olddom=$(legacy_domain)
     [[ -z "$olddom" ]] && { warn "Старый nginx.conf без домена — пересоздаю в новом формате"; return 0; }
+    valid_domain "${olddom}" || error "Не удалось определить старый домен для миграции"
     info "Миграция старого формата: переношу ${olddom} в sites/"
     mkdir -p "${NGINX_DIR}/sites"
     if [[ -e "${NGINX_DIR}/fullchain.pem" && ! -e "${NGINX_DIR}/${olddom}-fullchain.pem" ]]; then
         cp -aL "${NGINX_DIR}/fullchain.pem" "${NGINX_DIR}/${olddom}-fullchain.pem"
         cp -aL "${NGINX_DIR}/privkey.key"   "${NGINX_DIR}/${olddom}-privkey.key"
     fi
-    write_domain_conf "${olddom}"
+    write_domain_conf "${olddom}" /opt/nginx/html
     info "Домен ${olddom} сохранён → sites/${olddom}.conf"
 }
 
-nginx_reload() {
-    if docker exec "${CONTAINER}" nginx -t >/dev/null 2>&1; then
-        docker exec "${CONTAINER}" nginx -s reload >/dev/null 2>&1 && { info "nginx reloaded"; return; }
-    fi
-    warn "reload не прошёл — restart контейнера"
-    docker compose -f "${NGINX_DIR}/docker-compose.yml" restart >/dev/null 2>&1 || true
-}
-
 # =============================================================================
-#  UPDATE — обновить сайт-витрину для ВСЕХ доменов ноды
+#  UPDATE — обновить сайт указанного домена
 # =============================================================================
 if [[ "${MODE}" == "update" ]]; then
-    section "UPDATE: обновление сайта (все домены)"
     [[ -d "${NGINX_DIR}" ]] || error "ss-fast не установлен"
-    if ! compgen -G "${NGINX_DIR}/sites/*.conf" >/dev/null; then
-        # Старая одно-доменная раскладка (nginx.conf с единственным server{}, без sites/): общий конфиг не перезаписываем —
-        # иначе пропадёт server-блок домена. Меняем только файлы сайта (каталог html примонтирован в контейнер).
-        warn "Старая раскладка (нет ${NGINX_DIR}/sites/*.conf): обновляю только файлы сайта, nginx.conf не трогаю"
+    lock_node
+    if [[ -n "${DOMAIN}" ]]; then
+        valid_domain "${DOMAIN}" || error "Некорректное доменное имя: ${DOMAIN}"
+        DOMAIN=$(configured_domain "${DOMAIN}")
+        section "UPDATE: ${DOMAIN}"
+        update_domain_site "${DOMAIN}"
+        info "Сайт обновлён: ${DOMAIN}"
+    else
+        if has_domain_layout &&
+            grep -Fq "root ${NGINX_WEBROOTS}/" "${NGINX_DIR}"/sites/*.conf; then
+            error "Укажите домен: update <domain> [флаг сайта]"
+        fi
+        section "UPDATE: общий сайт старой установки"
         write_html
-        echo -e "\n${GREEN}Файлы сайта обновлены (nginx.conf без изменений)${NC}\n"
-        exit 0
     fi
-    write_html
-    write_shared_nginx
-    nginx_reload
-    echo -e "\n${GREEN}Сайт обновлён для всех доменов ноды${NC}\n"
     exit 0
 fi
 
 # =============================================================================
 #  INSTALL
 # =============================================================================
+valid_domain "${DOMAIN}" || error "Некорректное доменное имя: ${DOMAIN}"
 [[ -z "${DOMAIN}" ]] && error "Usage: [CF_Token=..|CF_Key=..+CF_Email=..|REGRU_USER=..+REGRU_PASS=..] ACME_EMAIL=.. bash install.sh [-z|-m] <domain>"
 [[ -z "${EMAIL}"  ]] && error "Не задан ACME_EMAIL"
 
@@ -8560,6 +8653,7 @@ esac
 section "1. remnanode: маунты"
 COMPOSE_FILE="${REMNANODE_DIR}/docker-compose.yml"
 [[ ! -f "${COMPOSE_FILE}" ]] && error "Нет ${COMPOSE_FILE} — remnanode не установлен"
+lock_node
 REMNA_RECREATE=0
 for M in "/dev/shm:/dev/shm:rw" "/opt/nginx:/opt/nginx:ro"; do
     SRC="${M%%:*}"
@@ -8602,13 +8696,10 @@ else
         || warn "IP сервера (${SERVER_IP}) не среди A-записей — для Reality serverName это может быть проблемой"
 fi
 
-section "4. Сайт + конфиги (мультидомен)"
+section "4. Подготовка каталогов"
+DOMAIN=$(configured_domain "${DOMAIN}")
 mkdir -p "${WEBROOT}" "${NGINX_DIR}/sites"
 migrate_old_layout
-write_html
-write_shared_nginx
-write_domain_conf "${DOMAIN}"
-info "sites/: $(ls -1 ${NGINX_DIR}/sites/*.conf 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 
 section "5. acme.sh"
 if [[ ! -f "${ACME_HOME}/acme.sh" ]]; then info "Ставлю acme.sh"; curl -fsSL https://get.acme.sh | sh -s email="${EMAIL}"; fi
@@ -8649,7 +8740,12 @@ if [[ $SKIP_CERT -eq 0 ]]; then
     info "Cert → ${CERTF}"
 fi
 
-section "7. docker-compose.yml"
+section "7. Сайт и конфиг ${DOMAIN}"
+publish_domain_site "${DOMAIN}"
+write_domain_conf "${DOMAIN}" "${NGINX_WEBROOTS}/${DOMAIN}/current"
+write_shared_nginx
+
+section "8. docker-compose.yml"
 cat > "${NGINX_DIR}/docker-compose.yml" <<DCEOF
 services:
   ${CONTAINER}:

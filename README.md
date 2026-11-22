@@ -9,7 +9,7 @@
 клиент
   └─► 443/tcp (xray VLESS+Reality)
         └─► /dev/shm/nginx.sock (ssl proxy_protocol)
-              └─► nginx → /opt/nginx/html (встроенный сайт)
+              └─► nginx → /opt/nginx/webroots/<domain>/current (встроенный сайт)
 ```
 
 ## Требования
@@ -65,13 +65,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.
 bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.sh) \
   --stillform <domain> <email> <regru_login> <regru_password>
 
-# Смена сайта на уже настроенной ноде
+# Установка Apex Relay на втором домене той же ноды
 bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.sh) \
-  update --apex-relay
+  --apex-relay racing.example.com admin@example.com your-login your-api-password
+
+# Смена сайта только на указанном домене
+bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.sh) \
+  update racing.example.com --apex-relay
 ```
 
-Выбранный сайт обслуживает все домены ноды из одного каталога `/opt/nginx/html`.
-При смене варианта скрипт удаляет страницы и ресурсы предыдущего сайта.
+При установке флаг выбирает сайт для указанного домена. Повторная установка с
+флагом или команда `update <domain> <флаг>` заменяет сайт только у этого домена.
+Флаг можно передать до или после домена.
+
+Домены старой установки продолжают обслуживать прежний сайт из `/opt/nginx/html`.
+На старой установке с отдельными конфигами `update <domain> <флаг>` переводит
+только выбранный домен на свой каталог. Команда `update <флаг>` без домена
+сохраняет прежний режим для нод, на которых все сайты ещё общие. Как только
+хотя бы один домен получает отдельный сайт, для обновления указывайте домен.
 
 Исходники Tarnex, Stillform Studio и Apex Relay лежат в `sites/mona/`,
 `sites/stillform/` и `sites/apex/`. После правки пересоберите соответствующий
@@ -87,12 +98,16 @@ bash -n install.sh
 
 ```
 /opt/nginx/
-├── html/
-│   └── index.html        ← главная страница выбранного сайта
+├── html/                          ← общий сайт старых установок
+├── webroots/
+│   └── <domain>/
+│       └── current/               ← активная версия сайта домена
+├── sites/
+│   └── <domain>.conf
 ├── docker-compose.yml
 ├── nginx.conf
-├── fullchain.pem
-└── privkey.key
+├── <domain>-fullchain.pem
+└── <domain>-privkey.key
 ```
 
 ## Настройка xray после установки
