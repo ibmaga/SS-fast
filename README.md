@@ -59,8 +59,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.
 | `-m`, `--mona` | Tarnex | `mona` |
 | `--stillform` | Stillform Studio, студия архитектурного света | `stillform` |
 | `--apex-relay` | Apex Relay, клуб симрейсинга | `apex` |
-| `--signal-archive` | Signal Archive, аудиолаборатория с плеером и сметой | `archive` |
-| `--keyform` | Keyform Workshop, мастерская с конфигуратором | `keyform` |
+| `--signal-archive` | Signal Archive, аудиолаборатория с кейсами, сметой и расчётом хранилища | `archive` |
+| `--keyform` | Keyform Workshop, мастерская с каталогом деталей, сборками и конфигуратором | `keyform` |
 
 ```bash
 # Установка с Stillform Studio

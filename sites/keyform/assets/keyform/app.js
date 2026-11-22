@@ -1,35 +1,3 @@
-const parts = {
-  case:[
-    {id:"k65", name:"Workshop 65 · tray mount", family:"K65"},
-    {id:"k75", name:"Workshop 75 · gasket mount", family:"K75"},
-    {id:"m65", name:"Magnetic 65 · top mount", family:"M65"},
-  ],
-  layout:[{id:"ANSI", name:"ANSI · wide left Shift"},{id:"ISO",name:"ISO · tall Enter"}],
-  pcb:[
-    {id:"k65a",name:"K65 ANSI · MX 5 pin",family:"K65",layout:"ANSI",socket:"MX",pins:5,stab:"pcb"},
-    {id:"k65i",name:"K65 ISO · MX 3 pin",family:"K65",layout:"ISO",socket:"MX",pins:3,stab:"pcb"},
-    {id:"k75a",name:"K75 ANSI · MX 5 pin",family:"K75",layout:"ANSI",socket:"MX",pins:5,stab:"pcb"},
-    {id:"k75i",name:"K75 ISO · MX 5 pin",family:"K75",layout:"ISO",socket:"MX",pins:5,stab:"pcb"},
-    {id:"m65a",name:"M65 ANSI · Hall effect",family:"M65",layout:"ANSI",socket:"HE",stab:"plate"},
-  ],
-  plate:[
-    {id:"k65a",name:"K65 ANSI aluminum",family:"K65",layout:"ANSI",stab:"pcb"},
-    {id:"k65i",name:"K65 ISO polycarbonate",family:"K65",layout:"ISO",stab:"pcb"},
-    {id:"k75a",name:"K75 ANSI FR4",family:"K75",layout:"ANSI",stab:"pcb"},
-    {id:"k75i",name:"K75 ISO aluminum",family:"K75",layout:"ISO",stab:"pcb"},
-    {id:"m65a",name:"M65 ANSI steel",family:"M65",layout:"ANSI",stab:"plate"},
-  ],
-  switches:[
-    {id:"line",name:"Line · MX linear, 5 pin",socket:"MX",pins:5},
-    {id:"step",name:"Step · MX tactile, 3 pin",socket:"MX",pins:3},
-    {id:"quiet",name:"Quiet · MX silent, 5 pin",socket:"MX",pins:5},
-    {id:"pulse",name:"Pulse · M65 magnetic linear",socket:"HE"},
-  ],
-  stabs:[
-    {id:"pcb",name:"PCB screw in",mount:"pcb"},
-    {id:"plate",name:"Plate clip in",mount:"plate"},
-  ],
-};
 const form = document.querySelector("#build-form");
 const title = document.querySelector("#fit-title");
 const status = document.querySelector("#fit-status");
@@ -39,6 +7,25 @@ const controls = Object.fromEntries(Object.keys(parts).map(key => [key,document.
 for (const [key, entries] of Object.entries(parts)) {
   for (const entry of entries) controls[key].add(new Option(entry.name, entry.id));
 }
+
+const buildLink = document.querySelector("#build-link");
+const copyMessage = document.querySelector("#copy-message");
+const incoming = new URLSearchParams(location.search);
+for (const [key,control] of Object.entries(controls)) {
+  const value = incoming.get(key);
+  if (parts[key].some(part => part.id === value)) control.value = value;
+}
+
+document.querySelector("#copy-build").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(buildLink.value);
+    copyMessage.textContent = "Build link copied.";
+  } catch {
+    buildLink.focus();
+    buildLink.select();
+    copyMessage.textContent = "Build link selected. Copy it to share.";
+  }
+});
 
 function selections() {
   return Object.fromEntries(Object.entries(controls).map(([key,control]) =>
@@ -63,7 +50,12 @@ function fitChecks(chosen) {
 }
 
 function render() {
-  const checks = fitChecks(selections());
+  const chosen = selections();
+  const url = new URL("/build.html",location.origin);
+  url.search = new URLSearchParams(Object.entries(chosen).map(([key,part]) => [key,part.id]));
+  buildLink.value = url.href;
+  copyMessage.textContent = "";
+  const checks = fitChecks(chosen);
   const failures = checks.filter(([ok]) => !ok).length;
   title.textContent = failures ? "Adjust your selection" : "Compatible build";
   status.textContent = failures ? failures + (failures === 1 ? " issue to resolve." : " issues to resolve.") : "All five fit checks passed.";

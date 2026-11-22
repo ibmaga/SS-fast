@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Compare a transfer with its restoration and estimate a cassette or reel project.">
+<link rel="icon" href="/assets/archive/favicon.png" type="image/png">
+<title>Itemized estimate · Signal Archive</title>
+<link rel="stylesheet" href="/assets/archive/site.css?v=e11c3659ae">
+<script src="/assets/archive/app.js?v=9a9e49262b" defer></script>
+</head>
+<body class="archive">
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap mast"><a class="brand" href="/"><span aria-hidden="true">◉</span>Signal Archive</a><nav aria-label="Main navigation"><a href="/index.html">Home</a><a href="/studio.html">Listen & estimate</a><a href="/formats.html">Formats</a><a href="/cases.html">Case library</a><a href="/delivery.html">Delivery</a></nav></header>
+<main class="wrap" id="main">
+<header class="intro"><p class="tag">Transfer services</p><h1>Itemized estimate</h1><p class="lede">Add a line for each format or treatment, then keep the estimate with your transfer notes.</p></header><section class="estimate-wrap"><article class="panel"><div class="panel-head"><p class="tag">Estimate</p><h2>Price your transfer</h2></div><form id="estimate"><div id="quote-lines"><fieldset data-line><legend>Transfer line</legend><div class="field"><label for="format">Recording format</label><select id="format" data-field="format" name="format"><option value="cassette">Compact cassette</option><option value="reel">Open reel ¼″</option><option value="micro">Microcassette</option></select></div><div class="pair"><div class="field"><label for="count">Items</label><input id="count" data-field="count" type="number" min="1" max="50" step="1" value="1" required></div><div class="field"><label for="minutes">Minutes per item</label><input id="minutes" data-field="minutes" type="number" min="1" max="240" step="1" value="45" required></div></div><label class="check"><input id="restore" data-field="restore" type="checkbox"> Add noise reduction and cleanup</label></fieldset></div><button id="quote-add" class="button secondary" type="button">Add transfer line</button><div class="total"><span>Estimated total</span><output id="estimate-total" for="format count minutes restore" aria-live="polite">€21.75</output></div><ul id="breakdown" class="micro"></ul><button id="quote-download" class="button" type="button">Download estimate</button></form></article></section><p class="spaced"><a href="/cases.html">Browse restoration cases</a> · <a href="/delivery.html">See delivery options</a></p>
+</main>
+<footer class="wrap footer"><strong>Signal Archive</strong><a href="/formats.html">Formats</a></footer>
+</body>
+</html>

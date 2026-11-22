@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Compare a transfer with its restoration and estimate a cassette or reel project.">
+<link rel="icon" href="/assets/archive/favicon.png" type="image/png">
+<title>Storage planner · Signal Archive</title>
+<link rel="stylesheet" href="/assets/archive/site.css?v=e11c3659ae">
+<script src="/assets/archive/storage.js?v=ae01ea90a6" defer></script>
+</head>
+<body class="archive">
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap mast"><a class="brand" href="/"><span aria-hidden="true">◉</span>Signal Archive</a><nav aria-label="Main navigation"><a href="/index.html">Home</a><a href="/studio.html">Listen & estimate</a><a href="/formats.html">Formats</a><a href="/cases.html">Case library</a><a href="/delivery.html">Delivery</a></nav></header>
+<main class="wrap" id="main">
+<header class="intro"><p class="tag">Delivery planning</p><h1>Plan WAV storage</h1><p class="lede">Estimate space for uncompressed PCM audio across your preservation and listening copies.</p></header><form class="panel" id="storage"><div class="pair"><div class="field"><label for="storage-minutes">Total recorded minutes</label><input type="number" id="storage-minutes" min="1" max="100000" step="1" value="60" required></div><div class="field"><label for="storage-copies">WAV copies</label><input type="number" id="storage-copies" min="1" max="20" step="1" value="2" required></div><div class="field"><label for="storage-mode">Channels</label><select id="storage-mode"><option value="1">Mono</option><option value="2" selected>Stereo</option></select></div><div class="field"><label for="storage-quality">PCM format</label><select id="storage-quality"><option value="44100:16">44.1 kHz / 16 bit</option><option value="48000:24" selected>48 kHz / 24 bit</option><option value="96000:24">96 kHz / 24 bit</option></select></div></div><div class="total"><span>Estimated space</span><output id="storage-size" aria-live="polite"></output></div><p class="spaced" id="storage-description">Size excludes file headers and metadata.</p></form><p class="spaced"><a href="/delivery.html">Back to delivery formats</a> · <a href="/estimate.html#estimate">Estimate the transfer cost</a></p>
+</main>
+<footer class="wrap footer"><strong>Signal Archive</strong><a href="/formats.html">Formats</a></footer>
+</body>
+</html>
