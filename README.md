@@ -59,6 +59,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.
 | `-m`, `--mona` | Tarnex | `mona` |
 | `--stillform` | Stillform Studio, студия архитектурного света | `stillform` |
 | `--apex-relay` | Apex Relay, клуб симрейсинга | `apex` |
+| `--signal-archive` | Signal Archive, аудиолаборатория с плеером и сметой | `archive` |
+| `--keyform` | Keyform Workshop, мастерская с конфигуратором | `keyform` |
 
 ```bash
 # Установка с Stillform Studio
@@ -84,13 +86,15 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.
 сохраняет прежний режим для нод, на которых все сайты ещё общие. Как только
 хотя бы один домен получает отдельный сайт, для обновления указывайте домен.
 
-Исходники Tarnex, Stillform Studio и Apex Relay лежат в `sites/mona/`,
-`sites/stillform/` и `sites/apex/`. После правки пересоберите соответствующий
+Исходники встроенных сайтов лежат в `sites/mona/`,
+`sites/stillform/`, `sites/apex/`, `sites/archive/` и `sites/keyform/`. После правки пересоберите соответствующий
 блок и проверьте синтаксис установщика.
 
 ```bash
 python3 tools/embed-site.py stillform
 python3 tools/embed-site.py apex
+python3 tools/embed-site.py archive
+python3 tools/embed-site.py keyform
 bash -n install.sh
 ```
 

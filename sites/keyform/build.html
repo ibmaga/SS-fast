@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Plan a keyboard around matching mounting, layout, sockets and stabilizers.">
+<link rel="icon" href="/assets/keyform/favicon.png" type="image/png">
+<title>Configurator · Keyform Workshop</title>
+<link rel="stylesheet" href="/assets/keyform/site.css">
+<script src="/assets/keyform/app.js" defer></script>
+</head>
+<body class="keyform">
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap mast"><a class="brand" href="/"><span aria-hidden="true">▪</span>Keyform Workshop</a><nav aria-label="Main navigation"><a href="/index.html">Home</a><a href="/build.html" aria-current="page">Configurator</a><a href="/parts.html">Parts guide</a></nav></header>
+<main class="wrap" id="main">
+<header class="intro"><p class="tag">Workshop tools</p><h1>Build configurator</h1><p class="lede">Plan a build using workshop reference parts. Check the model family and all six selections together.</p></header><section class="buildgrid"><form class="panel" id="build-form"><div class="panel-head"><p class="tag">Build sheet</p><h2>Choose your parts</h2></div><div class="pair"><div class="field"><label for="case">Case</label><select id="case" name="case"></select></div><div class="field"><label for="layout">Layout</label><select id="layout" name="layout"></select></div><div class="field"><label for="pcb">PCB</label><select id="pcb" name="pcb"></select></div><div class="field"><label for="plate">Plate</label><select id="plate" name="plate"></select></div><div class="field"><label for="switches">Switches</label><select id="switches" name="switches"></select></div><div class="field"><label for="stabs">Stabilizers</label><select id="stabs" name="stabs"></select></div></div><button id="fit" type="button" class="button">Choose matching parts</button></form><aside class="panel result"><p class="tag">Fit report</p><h2 id="fit-title">Checking your build</h2><p id="fit-status" role="status"></p><ul id="fit-list"></ul><button id="export" class="button" type="button" disabled>Download parts list</button><noscript><p>The configurator needs JavaScript to calculate part compatibility.</p></noscript></aside></section>
+</main>
+<footer class="wrap footer"><strong>Keyform Workshop</strong><a href="/parts.html">Parts guide</a></footer>
+</body>
+</html>

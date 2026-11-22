@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Compare a transfer with its restoration and estimate a cassette or reel project.">
+<link rel="icon" href="/assets/archive/favicon.png" type="image/png">
+<title>Listening room · Signal Archive</title>
+<link rel="stylesheet" href="/assets/archive/site.css">
+<script src="/assets/archive/app.js" defer></script>
+</head>
+<body class="archive">
+<a class="skip" href="#main">Skip to content</a>
+<header class="wrap mast"><a class="brand" href="/"><span aria-hidden="true">◉</span>Signal Archive</a><nav aria-label="Main navigation"><a href="/index.html">Home</a><a href="/studio.html" aria-current="page">Listen & estimate</a><a href="/formats.html">Formats</a></nav></header>
+<main class="wrap" id="main">
+<header class="intro"><p class="tag">Transfer services</p><h1>Listen and estimate</h1><p class="lede">Compare the same recording at the same position and calculate your transfer estimate.</p></header><section class="labgrid"><article class="panel"><div class="panel-head"><p class="tag">Listening room</p><h2>Before and after</h2></div><p>Use headphones to compare tape hiss, hum and the restored signal. Both versions share the same timing.</p><div class="toggle" role="group" aria-label="Recording version"><button type="button" data-audio="before" aria-pressed="true">Before · transfer</button><button type="button" data-audio="after" aria-pressed="false">After · restored</button></div><audio id="sample" controls preload="none" src="/assets/archive/before.mp3" aria-label="Audio restoration comparison"></audio><p class="micro" id="player-status" role="status">Selected: before, raw transfer.</p><p class="micro">Synthetic demonstration · 14 seconds</p></article><article class="panel"><div class="panel-head"><p class="tag">Estimate</p><h2>Price your transfer</h2></div><form id="estimate"><div class="field"><label for="format">Recording format</label><select id="format" name="format"><option value="cassette">Compact cassette</option><option value="reel">Open reel ¼″</option><option value="micro">Microcassette</option></select></div><div class="pair"><div class="field"><label for="count">Items</label><input id="count" type="number" min="1" max="50" step="1" value="1" required></div><div class="field"><label for="minutes">Minutes per item</label><input id="minutes" type="number" min="1" max="240" step="1" value="45" required></div></div><label class="check"><input id="restore" type="checkbox"> Add noise reduction and cleanup</label><div class="total"><span>Estimated total</span><output id="estimate-total" for="format count minutes restore" aria-live="polite">€21.75</output></div><p id="breakdown" class="micro"></p></form></article></section>
+</main>
+<footer class="wrap footer"><strong>Signal Archive</strong><a href="/formats.html">Formats</a></footer>
+</body>
+</html>
