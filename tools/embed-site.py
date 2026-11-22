@@ -3,7 +3,7 @@
 
     python3 tools/embed-site.py mona
 
-Текстовые файлы пишутся через heredoc с одинарными кавычками (без раскрытия $ и `), бинарные (png/ico/jpeg/woff2) — через base64.
+Текстовые файлы пишутся через heredoc с одинарными кавычками (без раскрытия $ и `), бинарные (png/ico/jpeg/webp/woff2) — через base64.
 Блок между маркерами `# >>> SITE-<имя> BEGIN/END` заменяется при каждом запуске, поэтому команду можно повторять после правки сайта.
 """
 import base64, os, re, sys
@@ -12,7 +12,7 @@ name = sys.argv[1] if len(sys.argv) > 1 else 'mona'
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 site = os.path.join(root, 'sites', name)
 script = os.path.join(root, 'install.sh')
-BIN = ('.png', '.ico', '.jpg', '.jpeg', '.woff2')
+BIN = ('.png', '.ico', '.jpg', '.jpeg', '.webp', '.woff2')
 
 files = []
 for dp, _, fs in os.walk(site):

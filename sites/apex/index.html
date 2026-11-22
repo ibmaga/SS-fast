@@ -8,13 +8,13 @@
   <meta property="og:description" content="Practise at your pace, race in a sprint, or share a car across a longer stint.">
   <title>Apex Relay</title>
   <link rel="icon" href="/assets/apex/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/assets/apex/style.css">
+  <link rel="stylesheet" href="/assets/apex/style.css?v=84bfef726d">
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
   <header class="wrap masthead">
     <a class="brand" href="/index.html"><img src="/assets/apex/favicon.svg" alt="" width="32" height="32">Apex Relay</a>
-    <nav aria-label="Main navigation"><a href="/index.html" aria-current="page">Club</a><a href="/calendar.html">Calendar</a><a href="/guide.html">Driver guide</a></nav>
+    <nav aria-label="Main navigation"><a href="/index.html" aria-current="page">Club</a><a href="/calendar.html">Calendar</a><a href="/guide.html">Driver guide</a><a href="/paddock.html">Paddock</a></nav>
   </header>
   <main id="main" class="wrap">
     <section class="hero">
@@ -24,7 +24,7 @@
         <p class="lede">Practise at your pace, race in a sprint, or share a car across a longer stint.</p>
         <a class="button" href="/calendar.html">Explore the calendar</a>
       </div>
-      <figure><img src="/assets/apex/circuit.jpg" width="1200" height="800" alt="A GT race car throwing spray across a wet circuit at dusk" fetchpriority="high"><figcaption>Wet running · GT session</figcaption></figure>
+      <figure><picture><source type="image/webp" srcset="/assets/apex/circuit-480.webp 480w, /assets/apex/circuit-800.webp 800w, /assets/apex/circuit-1200.webp 1200w" sizes="(max-width: 690px) calc(100vw - 32px), (max-width: 900px) calc((100vw - 72px) * .6), (max-width: 1416px) calc((100vw - 144px) * .6), 763px"><img src="/assets/apex/circuit.jpg" width="1200" height="800" alt="A GT race car throwing spray across a wet circuit at dusk" fetchpriority="high"></picture><figcaption>Wet running · GT session</figcaption></figure>
     </section>
     <section class="section">
       <header class="section-title"><h2>Session formats</h2><a href="/calendar.html">View all</a></header>
@@ -32,6 +32,50 @@
         <article data-category="Practice"><p class="eyebrow">Practice</p><h2>Silverstone</h2><p class="format">GT3 · 45 min</p><p>Build a reference lap and compare braking points through the high speed sections.</p></article>
         <article data-category="Sprint"><p class="eyebrow">Sprint</p><h2>Brands Hatch</h2><p class="format">GT4 · 25 min</p><p>Take a short race on a narrow circuit. Leave room into Paddock Hill Bend.</p></article>
         <article data-category="Endurance"><p class="eyebrow">Endurance</p><h2>Spa Francorchamps</h2><p class="format">GT3 · 90 min</p><p>Run a driver swap and practise the pit entry under race conditions.</p></article>
+      </div>
+    </section>
+    <section class="section">
+      <header class="section-title"><h2>From the paddock</h2><a href="/paddock.html">Paddock</a></header>
+      <div class="media-grid">
+        <article class="media-card">
+          <a href="/paddock.html#apex">
+          <picture>
+            <source type="image/webp" srcset="/assets/apex/media/apex-480.webp 480w, /assets/apex/media/apex-800.webp 800w, /assets/apex/media/apex-1280.webp 1280w" sizes="(max-width: 690px) calc(100vw - 32px), (max-width: 900px) calc((100vw - 80px) / 3), (max-width: 1416px) calc((100vw - 128px) / 3), 429px">
+            <img src="/assets/apex/media/apex-800.jpg" width="800" height="533" alt="Two touring cars follow a fast road circuit curve past the painted kerb" loading="lazy" decoding="async">
+          </picture>
+            <div class="media-copy">
+              <p class="eyebrow">Open practice</p>
+              <h3>Following at race pace</h3>
+              <p>Run a repeatable traffic drill before your first sprint.</p>
+            </div>
+          </a>
+        </article>
+        <article class="media-card">
+          <a href="/paddock.html#pit">
+          <picture>
+            <source type="image/webp" srcset="/assets/apex/media/pit-480.webp 480w, /assets/apex/media/pit-800.webp 800w, /assets/apex/media/pit-1280.webp 1280w" sizes="(max-width: 690px) calc(100vw - 32px), (max-width: 900px) calc((100vw - 80px) / 3), (max-width: 1416px) calc((100vw - 128px) / 3), 429px">
+            <img src="/assets/apex/media/pit-800.jpg" width="800" height="533" alt="A GT car sits beside an illuminated garage in an endurance pit lane at dusk" loading="lazy" decoding="async">
+          </picture>
+            <div class="media-copy">
+              <p class="eyebrow">Team endurance</p>
+              <h3>The driver swap</h3>
+              <p>Make the changeover routine boring before race day.</p>
+            </div>
+          </a>
+        </article>
+        <article class="media-card">
+          <a href="/paddock.html#cockpit">
+          <picture>
+            <source type="image/webp" srcset="/assets/apex/media/cockpit-480.webp 480w, /assets/apex/media/cockpit-800.webp 800w, /assets/apex/media/cockpit-1280.webp 1280w" sizes="(max-width: 690px) calc(100vw - 32px), (max-width: 900px) calc((100vw - 80px) / 3), (max-width: 1416px) calc((100vw - 128px) / 3), 429px">
+            <img src="/assets/apex/media/cockpit-800.jpg" width="800" height="533" alt="A driver sits at a sim racing wheel facing a curved circuit display" loading="lazy" decoding="async">
+          </picture>
+            <div class="media-copy">
+              <p class="eyebrow">Driver setup</p>
+              <h3>Build a repeatable rig</h3>
+              <p>Set up the wheel, pedals and field of view before changing the car.</p>
+            </div>
+          </a>
+        </article>
       </div>
     </section>
     <section class="section statement"><p class="eyebrow">Driver guide</p><h2>Race close.<br>Leave room.</h2><a href="/guide.html">Read the driver guide</a></section>
