@@ -177391,7 +177391,7 @@ section "8. docker-compose.yml"
 cat > "${NGINX_DIR}/docker-compose.yml" <<DCEOF
 services:
   ${CONTAINER}:
-    image: nginx:1.28
+    image: nginx:1.30.7
     container_name: ${CONTAINER}
     hostname: ${CONTAINER}
     restart: always
