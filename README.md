@@ -1,6 +1,6 @@
 # SS-fast — self-steal для remnanode
 
-Устанавливает nginx с unix socket и selfsteal-страницей (игра 2048) к уже работающему remnanode.  
+Устанавливает nginx с unix socket и выбранным встроенным сайтом к уже работающему remnanode.
 Не трогает существующую инфраструктуру — создаёт отдельный контейнер `remnanode-nginx`.
 
 ## Архитектура
@@ -9,7 +9,7 @@
 клиент
   └─► 443/tcp (xray VLESS+Reality)
         └─► /dev/shm/nginx.sock (ssl proxy_protocol)
-              └─► nginx → /opt/nginx/html (selfsteal: игра 2048)
+              └─► nginx → /opt/nginx/html (встроенный сайт)
 ```
 
 ## Требования
@@ -41,7 +41,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.
 | 2 | Устанавливает зависимости, включает BBR |
 | 3 | Проверяет DNS (поддерживает несколько A-записей) |
 | 4 | Создаёт структуру `/opt/nginx/` |
-| 5 | Деплоит selfsteal-страницу (игра 2048) |
+| 5 | Устанавливает выбранный встроенный сайт |
 | 6 | Устанавливает acme.sh |
 | 7 | Выпускает EC-256 сертификат через dns-01 (reg.ru API) — пропускает если действителен > 30 дней |
 | 8 | Создаёт `nginx.conf` (unix socket + proxy_protocol + ssl_reject_handshake) |
@@ -49,42 +49,46 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.
 | 10 | Настраивает UFW (22, 443) |
 | 11 | Запускает контейнер `remnanode-nginx` |
 
-## Выбор сайта (флаги `-z` / `-m`)
+## Выбор встроенного сайта
 
-В скрипт встроены два selfsteal-сайта. Флаг можно ставить в любом месте команды.
+Флаг можно ставить до или после домена. Без флага используется Northvale Cloud.
 
-| Флаг | Сайт | Для чего |
-|------|------|----------|
-| `-z`, `--zro` | Northvale Cloud (по умолчанию) | сайт по умолчанию, как раньше |
-| `-m`, `--mona` | Tarnex (тёмный, «отправка файлов по ссылке») | второй встроенный сайт |
-
-Можно задать и переменной: `SS_SITE=mona`.
+| Флаг | Встроенный сайт | Значение `SS_SITE` |
+|---|---|---|
+| `-z`, `--zro` | Northvale Cloud | `zro` |
+| `-m`, `--mona` | Tarnex | `mona` |
+| `--stillform` | Stillform Studio, студия архитектурного света | `stillform` |
+| `--apex-relay` | Apex Relay, клуб симрейсинга | `apex` |
 
 ```bash
-# установка/добавление домена с сайтом mona
-... bash install.sh -m node1.example.com
+# Установка с Stillform Studio
+bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.sh) \
+  --stillform <domain> <email> <regru_login> <regru_password>
 
-# сменить сайт на уже работающей ноде (для всех доменов ноды, без cert и compose)
-... bash install.sh update -m
+# Смена сайта на уже настроенной ноде
+bash <(curl -fsSL https://raw.githubusercontent.com/ibmaga/SS-fast/main/install.sh) \
+  update --apex-relay
 ```
 
-Без флага ставится прежний сайт — существующие процедуры не меняются. При смене сайта файлы предыдущего удаляются, на ноде остаётся только выбранный.
+Выбранный сайт обслуживает все домены ноды из одного каталога `/opt/nginx/html`.
+При смене варианта скрипт удаляет страницы и ресурсы предыдущего сайта.
 
-**Правка сайта mona.** Исходники лежат в `sites/mona/`. После правки пересоберите скрипт:
+Исходники Tarnex, Stillform Studio и Apex Relay лежат в `sites/mona/`,
+`sites/stillform/` и `sites/apex/`. После правки пересоберите соответствующий
+блок и проверьте синтаксис установщика.
 
 ```bash
-python3 tools/embed-site.py mona
+python3 tools/embed-site.py stillform
+python3 tools/embed-site.py apex
 bash -n install.sh
 ```
-
-В страницах нет абсолютных ссылок и адресов домена: на ноде один webroot на все её домены.
 
 ## Структура после установки
 
 ```
 /opt/nginx/
 ├── html/
-│   └── index.html        ← selfsteal страница (игра 2048)
+│   └── index.html        ← главная страница выбранного сайта
 ├── docker-compose.yml
 ├── nginx.conf
 ├── fullchain.pem
